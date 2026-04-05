@@ -234,6 +234,25 @@ function registerCommandPair(
   }
 }
 
+function registerSingleCommand(
+  pi: ExtensionAPI,
+  name: string,
+  description: string,
+  handler: (args: string, ctx: ExtensionCommandContext) => Promise<void>,
+): void {
+  pi.registerCommand(name, {
+    description,
+    handler: async (args, ctx) => {
+      try {
+        await handler(args, ctx);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        sendReport(pi, "Codex Error", `# Codex Error\n\n${message}\n`, "error");
+      }
+    },
+  });
+}
+
 export default function registerCodexExtension(pi: ExtensionAPI): void {
   let pendingInjectedTurnWaiters: Array<{ resolve: () => void }> = [];
 
@@ -352,19 +371,13 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
     };
   });
 
-  registerCommandPair(pi, "codex:review", "codex-review", "Run a structured Codex review for the current repository state", async (args, ctx) => {
+  registerSingleCommand(pi, "codex:review", "Run a structured Codex review for the current repository state", async (args, ctx) => {
     await handleReviewCommand(pi, ctx, "review", args);
   });
-  registerCommandPair(
-    pi,
-    "codex:adversarial-review",
-    "codex-adversarial-review",
-    "Run an adversarial Codex review for the current repository state",
-    async (args, ctx) => {
-      await handleReviewCommand(pi, ctx, "adversarial-review", args);
-    },
-  );
-  registerCommandPair(pi, "codex:task", "codex-task", "Inject a Codex-style implementation request into the active PI session", async (args, ctx) => {
+  registerSingleCommand(pi, "codex:adversarial-review", "Run an adversarial Codex review for the current repository state", async (args, ctx) => {
+    await handleReviewCommand(pi, ctx, "adversarial-review", args);
+  });
+  registerSingleCommand(pi, "codex:task", "Inject a Codex-style implementation request into the active PI session", async (args, ctx) => {
     const waiter = IS_PRINT_MODE ? createInjectedTurnWaiter() : null;
     if (waiter) {
       pendingInjectedTurnWaiters.push(waiter);
@@ -379,12 +392,7 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
       await waiter.promise;
     }
   });
-  registerCommandPair(
-    pi,
-    "codex:research",
-    "codex-research",
-    "Inject a Codex-style research request into the active PI session, adapted to active PI web and evidence tools",
-    async (args, ctx) => {
+  registerSingleCommand(pi, "codex:research", "Inject a Codex-style research request into the active PI session, adapted to active PI web and evidence tools", async (args, ctx) => {
       const waiter = IS_PRINT_MODE ? createInjectedTurnWaiter() : null;
       if (waiter) {
         pendingInjectedTurnWaiters.push(waiter);
@@ -398,8 +406,7 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
       if (waiter && injected) {
         await waiter.promise;
       }
-    },
-  );
+    });
   registerCommandPair(pi, "codex:status", "codex-status", "Show stored Codex review history for the current workspace", async (args, ctx) => {
     await handleStatusCommand(pi, ctx, args);
   });

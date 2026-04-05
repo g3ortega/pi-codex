@@ -176,3 +176,15 @@ test("standard review remains non-steerable and the README documents that bounda
 
   assert.match(readme, /`\/codex:review` stays non-steerable by design/i);
 });
+
+test("packaged workflow commands use colon names so prompt templates keep the hyphen names", () => {
+  const extensionSource = read("extensions/core/index.ts");
+  const readme = read("README.md");
+
+  assert.ok(!extensionSource.includes('"codex-review"'), "extension should not register /codex-review alias");
+  assert.ok(!extensionSource.includes('"codex-adversarial-review"'), "extension should not register /codex-adversarial-review alias");
+  assert.ok(!extensionSource.includes('"codex-task"'), "extension should not register /codex-task alias");
+  assert.ok(!extensionSource.includes('"codex-research"'), "extension should not register /codex-research alias");
+
+  assert.match(readme, /The hyphenated names without `:` are prompt templates, not extension commands\./);
+});

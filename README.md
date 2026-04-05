@@ -45,10 +45,6 @@ That gives the package strong write and shell safety defaults without taking ove
 
 Alias commands are also registered:
 
-- `/codex-review`
-- `/codex-adversarial-review`
-- `/codex-research`
-- `/codex-task`
 - `/codex-status`
 - `/codex-result`
 - `/codex-config`
@@ -63,6 +59,15 @@ The package also ships reusable prompt templates under `prompts/`:
 - `codex-research`
 
 Use those when you want lightweight prompt steering. Use the `/codex:*` commands when you want the full packaged workflow.
+
+The packaged workflow commands intentionally use the colon names:
+
+- `/codex:review`
+- `/codex:adversarial-review`
+- `/codex:task`
+- `/codex:research`
+
+The hyphenated names without `:` are prompt templates, not extension commands.
 
 ## Install
 
