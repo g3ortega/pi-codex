@@ -1,0 +1,78 @@
+{
+  "name": "pi-codex",
+  "version": "0.1.0",
+  "description": "Unofficial Codex-inspired review, research, and task workflows for the PI coding agent",
+  "type": "module",
+  "author": "g3ortega",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/g3ortega/pi-codex.git"
+  },
+  "homepage": "https://github.com/g3ortega/pi-codex#readme",
+  "bugs": {
+    "url": "https://github.com/g3ortega/pi-codex/issues"
+  },
+  "engines": {
+    "node": ">=20.6.0"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "codex",
+    "review",
+    "coding-agent"
+  ],
+  "files": [
+    "README.md",
+    "extensions",
+    "prompts",
+    "schemas",
+    "skills",
+    "src",
+    "tsconfig.json"
+  ],
+  "scripts": {
+    "install:pi": "node --input-type=module -e \"import { spawnSync } from 'node:child_process'; import process from 'node:process'; const result = spawnSync('pi', ['install', '-l', process.cwd()], { stdio: 'inherit' }); process.exit(result.status ?? 1);\"",
+    "typecheck": "tsc --noEmit",
+    "test:prompts": "node --test tests/prompt-regression.test.mjs",
+    "test": "npm run typecheck && npm run test:prompts",
+    "check": "npm test"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-ai": ">=0.65.0",
+    "@mariozechner/pi-coding-agent": ">=0.65.0",
+    "@mariozechner/pi-tui": ">=0.65.0"
+  },
+  "dependencies": {
+    "@juanibiapina/pi-extension-settings": "0.6.1",
+    "pi-bash-confirm": "2.0.0",
+    "pi-show-diffs": "0.2.6"
+  },
+  "bundledDependencies": [
+    "@juanibiapina/pi-extension-settings",
+    "pi-bash-confirm",
+    "pi-show-diffs"
+  ],
+  "devDependencies": {
+    "@mariozechner/pi-ai": "0.65.0",
+    "@mariozechner/pi-coding-agent": "0.65.0",
+    "@mariozechner/pi-tui": "0.65.0",
+    "@types/node": "^24.5.2",
+    "typescript": "^5.9.2"
+  },
+  "pi": {
+    "extensions": [
+      "./node_modules/@juanibiapina/pi-extension-settings/dist/index.js",
+      "./extensions/core/index.ts",
+      "./node_modules/pi-bash-confirm/extensions/bash-confirm.ts",
+      "./node_modules/pi-show-diffs/index.ts"
+    ],
+    "prompts": [
+      "./prompts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  }
+}
