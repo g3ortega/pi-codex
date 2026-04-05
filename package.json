@@ -35,7 +35,7 @@
   "scripts": {
     "install:pi": "node --input-type=module -e \"import { spawnSync } from 'node:child_process'; import process from 'node:process'; const result = spawnSync('pi', ['install', '-l', process.cwd()], { stdio: 'inherit' }); process.exit(result.status ?? 1);\"",
     "typecheck": "tsc --noEmit",
-    "test:prompts": "node --test tests/prompt-regression.test.mjs",
+    "test:prompts": "node --test tests/*.test.mjs",
     "test": "npm run typecheck && npm run test:prompts",
     "check": "npm test"
   },

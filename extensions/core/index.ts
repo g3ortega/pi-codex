@@ -4,6 +4,7 @@ import { DynamicBorder, getMarkdownTheme } from "@mariozechner/pi-coding-agent";
 
 import { loadCodexSettings, registerCodexSettings } from "../../src/config/codex-settings.js";
 import { splitShellLikeArgs } from "../../src/runtime/arg-parser.js";
+import { detectBuiltinAlternativeForBash } from "../../src/runtime/bash-alternatives.js";
 import { findProtectedPathInBashCommand, findProtectedPathMatch } from "../../src/runtime/path-protection.js";
 import { buildResearchPrompt, buildTaskPrompt, inspectResearchTools } from "../../src/runtime/session-prompts.js";
 import { executeReviewRun, type ReviewCommandOptions } from "../../src/review/review-runner.js";
@@ -270,6 +271,7 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
   pi.on("tool_call", async (event, ctx) => {
     const settings = loadCodexSettings(ctx.cwd);
     let blockedTarget: string | null = null;
+    let builtinAlternativeReason: string | null = null;
 
     if (event.toolName === "edit" || event.toolName === "write") {
       const pathValue = String((event.input as { path?: unknown }).path ?? "");
@@ -278,17 +280,30 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
 
     if (event.toolName === "bash") {
       const command = String((event.input as { command?: unknown }).command ?? "");
+      const builtinAlternative = detectBuiltinAlternativeForBash(command);
+      if (builtinAlternative) {
+        builtinAlternativeReason = builtinAlternative.reason;
+      }
       blockedTarget = findProtectedPathInBashCommand(command, settings.protectedPaths);
     }
 
-    if (!blockedTarget) {
+    if (!blockedTarget && !builtinAlternativeReason) {
       return undefined;
     }
 
     if (ctx.hasUI) {
-      ctx.ui.notify(`Blocked mutation of protected path: ${blockedTarget}`, "warning");
+      if (blockedTarget) {
+        ctx.ui.notify(`Blocked mutation of protected path: ${blockedTarget}`, "warning");
+      } else if (builtinAlternativeReason) {
+        ctx.ui.notify(builtinAlternativeReason, "info");
+      }
     }
-    return { block: true, reason: `Path "${blockedTarget}" is protected by pi-codex.` };
+
+    if (blockedTarget) {
+      return { block: true, reason: `Path "${blockedTarget}" is protected by pi-codex.` };
+    }
+
+    return { block: true, reason: builtinAlternativeReason ?? "Use PI's built-in read-only tools instead of bash." };
   });
 
   pi.on("tool_result", async (event) => {
@@ -303,7 +318,23 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
       .trim();
 
     if (!textBody.includes("protected by pi-codex")) {
-      return undefined;
+      if (!textBody.includes("built-in `") && !textBody.includes("Use the built-in")) {
+        return undefined;
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: [
+              textBody,
+              "",
+              "Do not retry the same repository-inspection step with bash.",
+              "Use the appropriate PI read-only tool instead, such as `find`, `ls`, `grep`, or `read`.",
+            ].join("\n"),
+          },
+        ],
+      };
     }
 
     return {
