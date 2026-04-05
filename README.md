@@ -53,10 +53,10 @@ Alias commands are also registered:
 
 The package also ships reusable prompt templates under `prompts/`:
 
-- `codex-review`
-- `codex-adversarial-review`
-- `codex-task`
-- `codex-research`
+- `codex-prompt-review`
+- `codex-prompt-adversarial-review`
+- `codex-prompt-task`
+- `codex-prompt-research`
 
 Use those when you want lightweight prompt steering. Use the `/codex:*` commands when you want the full packaged workflow.
 
@@ -67,7 +67,9 @@ The packaged workflow commands intentionally use the colon names:
 - `/codex:task`
 - `/codex:research`
 
-The hyphenated names without `:` are prompt templates, not extension commands.
+The lightweight prompt templates intentionally use the `codex-prompt-*` prefix so they do not look like the packaged workflow commands.
+
+Legacy prompt-template names such as `/codex-review` and `/codex-adversarial-review` are blocked with guidance instead of being expanded, to avoid accidental bash-confirmation flows.
 
 ## Install
 

@@ -16,6 +16,11 @@ If a point is an inference, label it clearly.
 Do not invent files, line numbers, or unsupported runtime behavior.
 </grounding_rules>
 
+<pi_tooling_preference>
+Prefer PI read-only tools (`find`, `ls`, `grep`, `read`) for repository inspection.
+Use `bash` only when the read-only tools cannot answer the question.
+</pi_tooling_preference>
+
 <dig_deeper_nudge>
 After the first plausible issue, check for missing guards, empty-state behavior, retries, stale state, rollback risk, compatibility edge cases, and test gaps before finalizing.
 </dig_deeper_nudge>

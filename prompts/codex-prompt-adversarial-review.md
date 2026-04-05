@@ -20,6 +20,11 @@ Be aggressive, but stay grounded in the repository context and tool outputs you 
 Do not invent files, line numbers, exploits, or runtime failures you cannot support.
 </grounding_rules>
 
+<pi_tooling_preference>
+Prefer PI read-only tools (`find`, `ls`, `grep`, `read`) for repository inspection.
+Use `bash` only when the read-only tools cannot answer the question.
+</pi_tooling_preference>
+
 <dig_deeper_nudge>
 Check for second-order failures, empty-state behavior, retries, stale state, rollback risk, and hidden design weaknesses before finalizing.
 </dig_deeper_nudge>

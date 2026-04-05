@@ -16,6 +16,11 @@ Prefer implementing and validating over only describing the work.
 If the request implies implementation, finish the implementation instead of stopping at diagnosis or planning.
 </completeness_contract>
 
+<tooling_preference>
+Prefer PI read-only tools (`find`, `ls`, `grep`, `read`) for repository inspection.
+Use `bash` only when the read-only tools cannot answer the question or when build, test, or runtime validation truly requires it.
+</tooling_preference>
+
 <verification_loop>
 Before finalizing, verify the result against the request and the changed files or tool outputs.
 If verification is blocked, say exactly what prevented it.

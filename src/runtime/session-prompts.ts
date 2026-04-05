@@ -75,6 +75,11 @@ export function buildTaskPrompt(request: string): string {
     "If the request implies implementation, complete the implementation instead of stopping at diagnosis, planning, or commentary.",
     "</completeness_contract>",
     "",
+    "<tooling_preference>",
+    "Prefer PI read-only tools (`find`, `ls`, `grep`, `read`) for repository inspection.",
+    "Use `bash` only when the read-only tools cannot answer the question or when build, test, or runtime validation truly requires it.",
+    "</tooling_preference>",
+    "",
     "<verification_loop>",
     "Before finalizing, verify the result against the request and the changed files or tool outputs.",
     "If verification is feasible, do it. If it is blocked, say exactly what prevented it.",
@@ -132,6 +137,8 @@ export function buildResearchPrompt(request: string, snapshot: ResearchToolSnaps
     "<tool_strategy>",
     `Active web research tools: ${formatToolList(snapshot.activeWebTools)}`,
     `Active local evidence tools: ${formatToolList(snapshot.activeLocalEvidenceTools)}`,
+    "Prefer PI read-only tools (`find`, `ls`, `grep`, `read`) over `bash` for repository inspection.",
+    "Only use `bash` when a read-only builtin cannot retrieve the needed evidence.",
   ];
 
   if (snapshot.inactiveAvailableWebTools.length > 0) {

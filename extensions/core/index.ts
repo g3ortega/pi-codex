@@ -25,6 +25,12 @@ type ReportDetails = {
 
 const REPORT_TYPE = "codex-report";
 const IS_PRINT_MODE = process.argv.includes("-p") || process.argv.includes("--print");
+const LEGACY_PROMPT_ALIAS_TITLES: Record<string, string> = {
+  "codex-review": "Codex Review",
+  "codex-adversarial-review": "Codex Adversarial Review",
+  "codex-task": "Codex Task",
+  "codex-research": "Codex Research",
+};
 
 function reportThemeName(variant: ReportDetails["variant"]): "customMessageBg" | "toolSuccessBg" | "toolPendingBg" | "toolErrorBg" {
   switch (variant) {
@@ -67,6 +73,48 @@ function createInjectedTurnWaiter() {
       settled = true;
       resolveWaiter?.();
     },
+  };
+}
+
+function parseSlashInput(text: string): { name: string; args: string } | null {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("/")) {
+    return null;
+  }
+
+  const body = trimmed.slice(1);
+  const spaceIndex = body.indexOf(" ");
+  if (spaceIndex === -1) {
+    return { name: body, args: "" };
+  }
+
+  return {
+    name: body.slice(0, spaceIndex),
+    args: body.slice(spaceIndex + 1).trim(),
+  };
+}
+
+function buildLegacyPromptAliasGuidance(name: string, args: string): { title: string; markdown: string } | null {
+  const title = LEGACY_PROMPT_ALIAS_TITLES[name];
+  if (!title) {
+    return null;
+  }
+
+  const suffix = args ? ` ${args}` : "";
+  const workflowCommand =
+    name === "codex-review" && args ? `/codex:adversarial-review${suffix}` : `/codex:${name.slice("codex-".length)}${suffix}`;
+  const promptTemplate = `/${name.replace(/^codex-/, "codex-prompt-")}${suffix}`;
+
+  return {
+    title,
+    markdown: [
+      `# ${title}`,
+      "",
+      `\`/${name}\` is intentionally disabled to avoid confusion with the packaged workflow commands and to prevent accidental shell-confirmation flows.`,
+      "",
+      `Use \`${workflowCommand}\` for the packaged workflow.`,
+      `Use \`${promptTemplate}\` only if you explicitly want the lightweight prompt template.`,
+    ].join("\n"),
   };
 }
 
@@ -257,6 +305,21 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
   let pendingInjectedTurnWaiters: Array<{ resolve: () => void }> = [];
 
   registerCodexSettings(pi);
+
+  pi.on("input", (event) => {
+    const slash = parseSlashInput(event.text);
+    if (!slash) {
+      return { action: "continue" } as const;
+    }
+
+    const guidance = buildLegacyPromptAliasGuidance(slash.name, slash.args);
+    if (!guidance) {
+      return { action: "continue" } as const;
+    }
+
+    sendReport(pi, guidance.title, guidance.markdown, "warning");
+    return { action: "handled" } as const;
+  });
 
   pi.registerMessageRenderer(REPORT_TYPE, (message, _options, theme) => {
     const details = (message.details ?? {}) as ReportDetails;
