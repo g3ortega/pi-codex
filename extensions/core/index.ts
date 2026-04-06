@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import type { AutocompleteItem } from "@mariozechner/pi-tui";
 import { Box, Markdown, Text } from "@mariozechner/pi-tui";
 import { DynamicBorder, getMarkdownTheme } from "@mariozechner/pi-coding-agent";
 
@@ -23,6 +24,7 @@ import {
   listBackgroundJobs,
   readBackgroundJobResultMarkdown,
 } from "../../src/runtime/job-store.js";
+import { isTerminalJobStatus } from "../../src/runtime/job-types.js";
 import { applyStoredTaskPatch } from "../../src/runtime/patch-apply.js";
 import {
   backgroundJobReportVariant,
@@ -474,7 +476,29 @@ async function handleStatusCommand(pi: ExtensionAPI, ctx: ExtensionCommandContex
 }
 
 async function handleResultCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext, rawArgs: string): Promise<void> {
-  const reference = rawArgs.trim() || undefined;
+  if (isExplicitLatestResultRequest(rawArgs)) {
+    const latest = resolveLatestStoredResult(ctx.cwd);
+    if (!latest) {
+      sendReport(pi, "Codex Result", "# Codex Result\n\nNo stored background job result or foreground review result is available for this workspace.\n", "warning");
+      return;
+    }
+
+    if (latest.kind === "job") {
+      const markdown = readBackgroundJobResultMarkdown(latest.job.workspaceRoot, latest.job.id);
+      if (markdown) {
+        sendReport(pi, "Codex Result", markdown, backgroundJobReportVariant(latest.job));
+        return;
+      }
+
+      sendReport(pi, "Codex Result", renderBackgroundJobMarkdown(latest.job), backgroundJobReportVariant(latest.job));
+      return;
+    }
+
+    sendReport(pi, "Codex Result", renderStoredReviewMarkdown(latest.run), "info");
+    return;
+  }
+
+  const reference = normalizeLatestResultReference(rawArgs);
   let job = null;
   try {
     job = findBackgroundJob(ctx.cwd, reference);
@@ -588,16 +612,215 @@ async function handleConfigCommand(pi: ExtensionAPI, ctx: ExtensionCommandContex
   sendReport(pi, "Codex Config", renderConfigMarkdown(settings, currentModel), "info");
 }
 
+type ArgumentCompletionProvider = (argumentPrefix: string) => AutocompleteItem[] | null;
+
+type FlagCompletionSpec = {
+  flag: string;
+  description: string;
+  values?: Array<{ value: string; description: string }>;
+};
+
+function buildFlagArgumentCompletions(argumentPrefix: string, specs: FlagCompletionSpec[]): AutocompleteItem[] | null {
+  const prefix = argumentPrefix;
+  const trimmedEnd = prefix.replace(/\s+$/, "");
+  const hasTrailingSpace = trimmedEnd.length !== prefix.length;
+  const parsedTokens = trimmedEnd.length > 0 ? splitShellLikeArgs(trimmedEnd) : [];
+  const committedTokens = hasTrailingSpace ? [...parsedTokens] : parsedTokens.slice(0, -1);
+  const activeToken = hasTrailingSpace ? "" : (parsedTokens.at(-1) ?? "");
+  const previousToken = committedTokens.at(-1) ?? "";
+  const basePrefix = committedTokens.length > 0 ? `${committedTokens.join(" ")} ` : "";
+  const flagsWithValues = new Set(specs.filter((spec) => spec.values && spec.values.length > 0).map((spec) => spec.flag));
+
+  let committedIndex = 0;
+  while (committedIndex < committedTokens.length) {
+    const token = committedTokens[committedIndex];
+    if (token === "--") {
+      return null;
+    }
+    if (!token.startsWith("--")) {
+      return null;
+    }
+
+    committedIndex += 1;
+    if (flagsWithValues.has(token)) {
+      const next = committedTokens[committedIndex];
+      if (next && next !== "--" && !next.startsWith("--")) {
+        committedIndex += 1;
+      }
+    }
+  }
+
+  if (activeToken && !activeToken.startsWith("--") && !(flagsWithValues.has(previousToken) && !hasTrailingSpace)) {
+    return null;
+  }
+
+  const usedFlags = new Set(committedTokens.filter((token) => token.startsWith("--")));
+
+  const valueSpec = specs.find((spec) => spec.flag === previousToken && spec.values && spec.values.length > 0);
+  if (valueSpec?.values) {
+    const items = valueSpec.values
+      .filter((item) => item.value.startsWith(activeToken))
+      .map((item) => ({
+        value: `${basePrefix}${item.value} `,
+        label: item.value,
+        description: item.description,
+      }));
+    return items.length > 0 ? items : null;
+  }
+
+  const items = specs
+    .filter((spec) => activeToken === "" || spec.flag.startsWith(activeToken))
+    .filter((spec) => !usedFlags.has(spec.flag))
+    .flatMap((spec) => {
+      if (!spec.values || spec.values.length === 0) {
+        return [
+          {
+            value: `${basePrefix}${spec.flag} `,
+            label: spec.flag,
+            description: spec.description,
+          },
+        ];
+      }
+
+      return spec.values.map((item) => ({
+        value: `${basePrefix}${spec.flag} ${item.value} `,
+        label: `${spec.flag} ${item.value}`,
+        description: item.description,
+      }));
+    });
+
+  return items.length > 0 ? items : null;
+}
+
+function reviewArgumentCompletions(argumentPrefix: string): AutocompleteItem[] | null {
+  return buildFlagArgumentCompletions(argumentPrefix, [
+    {
+      flag: "--background",
+      description: "Run the review as a detached background job.",
+    },
+    {
+      flag: "--scope",
+      description: "Choose which repository state to review.",
+      values: [
+        { value: "working-tree", description: "Review staged, unstaged, and untracked changes in the current worktree." },
+        { value: "branch", description: "Review the branch diff against the selected base ref." },
+      ],
+    },
+    {
+      flag: "--base",
+      description: "Set the base ref used for branch reviews.",
+      values: [
+        { value: "origin/main", description: "Compare the current branch against origin/main." },
+        { value: "main", description: "Compare the current branch against local main." },
+        { value: "origin/develop", description: "Compare the current branch against origin/develop." },
+        { value: "develop", description: "Compare the current branch against local develop." },
+      ],
+    },
+    {
+      flag: "--model",
+      description: "Override the provider/model used for this review run.",
+      values: [{ value: "openai-codex/gpt-5.3-codex", description: "Use the current Codex default model." }],
+    },
+  ]);
+}
+
+function taskArgumentCompletions(argumentPrefix: string): AutocompleteItem[] | null {
+  return buildFlagArgumentCompletions(argumentPrefix, [
+    {
+      flag: "--readonly",
+      description: "Keep the task read-only and ask for diagnosis or a proposed patch.",
+    },
+    {
+      flag: "--write",
+      description: "Allow code changes for this task.",
+    },
+    {
+      flag: "--background",
+      description: "Run the task in a detached worker instead of the current session.",
+    },
+    {
+      flag: "--model",
+      description: "Override the provider/model used for this task run.",
+      values: [{ value: "openai-codex/gpt-5.3-codex", description: "Use the current Codex default model." }],
+    },
+  ]);
+}
+
+function researchArgumentCompletions(argumentPrefix: string): AutocompleteItem[] | null {
+  return buildFlagArgumentCompletions(argumentPrefix, [
+    {
+      flag: "--background",
+      description: "Run the research in a detached worker with completion notification.",
+    },
+    {
+      flag: "--model",
+      description: "Override the provider/model used for this research run.",
+      values: [{ value: "openai-codex/gpt-5.3-codex", description: "Use the current Codex default model." }],
+    },
+  ]);
+}
+
+function resultArgumentCompletions(argumentPrefix: string): AutocompleteItem[] | null {
+  return buildFlagArgumentCompletions(argumentPrefix, [
+    {
+      flag: "--last",
+      description: "Show the latest stored result without providing a job id.",
+    },
+  ]);
+}
+
+function normalizeLatestResultReference(rawArgs: string): string | undefined {
+  const trimmed = rawArgs.trim();
+  if (!trimmed || trimmed === "--last") {
+    return undefined;
+  }
+  return trimmed;
+}
+
+function isExplicitLatestResultRequest(rawArgs: string): boolean {
+  return rawArgs.trim() === "--last";
+}
+
+function backgroundResultSortKey(job: ReturnType<typeof listBackgroundJobs>[number]): string {
+  return job.completedAt ?? job.cancelledAt ?? job.updatedAt ?? job.createdAt;
+}
+
+function resolveLatestStoredResult(
+  cwd: string,
+): { kind: "job"; job: ReturnType<typeof listBackgroundJobs>[number] } | { kind: "review"; run: ReturnType<typeof listStoredReviews>[number] } | null {
+  const terminalJobs = listBackgroundJobs(cwd)
+    .filter((job) => isTerminalJobStatus(job.status))
+    .sort((left, right) => backgroundResultSortKey(right).localeCompare(backgroundResultSortKey(left)));
+  const latestReview = listStoredReviews(cwd)[0] ?? null;
+  const latestTerminalJob = terminalJobs[0] ?? null;
+
+  if (latestTerminalJob && latestReview) {
+    return backgroundResultSortKey(latestTerminalJob).localeCompare(latestReview.createdAt) >= 0
+      ? { kind: "job", job: latestTerminalJob }
+      : { kind: "review", run: latestReview };
+  }
+  if (latestTerminalJob) {
+    return { kind: "job", job: latestTerminalJob };
+  }
+  if (latestReview) {
+    return { kind: "review", run: latestReview };
+  }
+
+  return null;
+}
+
 function registerCommandPair(
   pi: ExtensionAPI,
   name: string,
   alias: string,
   description: string,
   handler: (args: string, ctx: ExtensionCommandContext) => Promise<void>,
+  getArgumentCompletions?: ArgumentCompletionProvider,
 ): void {
   for (const commandName of [name, alias]) {
     pi.registerCommand(commandName, {
       description,
+      ...(getArgumentCompletions ? { getArgumentCompletions } : {}),
       handler: async (args, ctx) => {
         try {
           await handler(args, ctx);
@@ -615,9 +838,11 @@ function registerSingleCommand(
   name: string,
   description: string,
   handler: (args: string, ctx: ExtensionCommandContext) => Promise<void>,
+  getArgumentCompletions?: ArgumentCompletionProvider,
 ): void {
   pi.registerCommand(name, {
     description,
+    ...(getArgumentCompletions ? { getArgumentCompletions } : {}),
     handler: async (args, ctx) => {
       try {
         await handler(args, ctx);
@@ -783,18 +1008,42 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
     };
   });
 
-  registerSingleCommand(pi, "codex:review", "Run a structured Codex review for the current repository state", async (args, ctx) => {
+  registerSingleCommand(
+    pi,
+    "codex:review",
+    "Run a structured Codex review [--background] [--scope working-tree|branch] [--base <ref>] [--model <provider/model>]",
+    async (args, ctx) => {
     await handleReviewCommand(pi, ctx, "review", args);
-  });
-  registerSingleCommand(pi, "codex:adversarial-review", "Run an adversarial Codex review for the current repository state", async (args, ctx) => {
+    },
+    reviewArgumentCompletions,
+  );
+  registerSingleCommand(
+    pi,
+    "codex:adversarial-review",
+    "Run an adversarial Codex review [--background] [--scope working-tree|branch] [--base <ref>] [--model <provider/model>]",
+    async (args, ctx) => {
     await handleReviewCommand(pi, ctx, "adversarial-review", args);
-  });
-  registerSingleCommand(pi, "codex:task", "Inject a Codex-style implementation request into the active PI session", async (args, ctx) => {
+    },
+    reviewArgumentCompletions,
+  );
+  registerSingleCommand(
+    pi,
+    "codex:task",
+    "Run a Codex-style task [--readonly|--write] [--background] [--model <provider/model>]",
+    async (args, ctx) => {
     await runTaskCommandWithWaiter(pi, ctx, args, pendingInjectedTurnWaiters);
-  });
-  registerSingleCommand(pi, "codex:research", "Inject a Codex-style research request into the active PI session, adapted to active PI web and evidence tools", async (args, ctx) => {
+    },
+    taskArgumentCompletions,
+  );
+  registerSingleCommand(
+    pi,
+    "codex:research",
+    "Run Codex-style research [--background] [--model <provider/model>]",
+    async (args, ctx) => {
     await runResearchCommandWithWaiter(pi, ctx, args, pendingInjectedTurnWaiters);
-  });
+    },
+    researchArgumentCompletions,
+  );
   pi.registerCommand(internalReviewJobCommandName(), {
     description: "Internal pi-codex background review runner",
     handler: async (args, ctx) => {
@@ -825,12 +1074,19 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
       await runDetachedTaskJob(pi, ctx, loadCodexSettings(ctx.cwd), jobId);
     },
   });
-  registerCommandPair(pi, "codex:status", "codex-status", "Show stored Codex review history for the current workspace", async (args, ctx) => {
+  registerCommandPair(pi, "codex:status", "codex-status", "Show background job status or stored review history for the current workspace", async (args, ctx) => {
     await handleStatusCommand(pi, ctx, args);
   });
-  registerCommandPair(pi, "codex:result", "codex-result", "Show a stored Codex review result for the current workspace", async (args, ctx) => {
-    await handleResultCommand(pi, ctx, args);
-  });
+  registerCommandPair(
+    pi,
+    "codex:result",
+    "codex-result",
+    "Show a stored background job result or review result [--last|<job-id>] for the current workspace",
+    async (args, ctx) => {
+      await handleResultCommand(pi, ctx, args);
+    },
+    resultArgumentCompletions,
+  );
   registerCommandPair(pi, "codex:cancel", "codex-cancel", "Cancel an active background Codex job for the current workspace", async (args, ctx) => {
     await handleCancelCommand(pi, ctx, args);
   });

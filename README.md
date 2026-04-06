@@ -8,12 +8,12 @@ Tested with PI `0.65.0`.
 
 ## Current scope
 
-This first implementation focuses on:
+The current implementation focuses on:
 
 - evidence-first research handoffs
 - structured repository reviews
 - adversarial reviews
-- background review and research jobs with completion notifications back into the originating PI session
+- background review, research, readonly task, and isolated write-task jobs with completion notifications back into the originating PI session
 - project-aware Codex settings
 - protected-path guards for `write`, `edit`, and `bash` commands that target protected paths unless the command is explicitly read-only
 - compatibility with PI ecosystem safety packages
@@ -36,16 +36,18 @@ That gives the package strong write and shell safety defaults without taking ove
 
 ## Commands
 
-- `/codex:review`
-- `/codex:adversarial-review`
-- `/codex:research`
-- `/codex:task`
-- `/codex:status`
-- `/codex:jobs`
-- `/codex:result`
-- `/codex:apply`
-- `/codex:cancel`
-- `/codex:config`
+- `/codex:review` for structured repository review
+- `/codex:adversarial-review` for harsher, no-ship-oriented review
+- `/codex:research` for evidence-first investigation
+- `/codex:task` for inline or background implementation work
+- `/codex:status` for a single job or recent review status
+- `/codex:jobs` for background job overview
+- `/codex:result` for stored job or review output
+- `/codex:apply` for completed background write-task patches
+- `/codex:cancel` for active background jobs
+- `/codex:config` for merged `pi-codex` settings
+
+PI command autocomplete can show common flags such as `--background`, `--scope`, `--readonly`, `--write`, `--model`, and `--last`.
 
 Alias commands are also registered:
 
@@ -127,6 +129,15 @@ Or add the package to `.pi/settings.json` manually:
 
 ## Usage
 
+Common retrieval flow:
+
+```bash
+/codex:jobs
+/codex:status
+/codex:result --last
+/codex:result <job-id>
+```
+
 Run a structured review of the current repository state:
 
 ```bash
@@ -182,7 +193,7 @@ Background research runs in a detached PI child session with a headless-safe too
 - no mutation tools in the detached child
 
 Background jobs notify the originating PI session when they complete, fail, or are cancelled, so you can keep working in the main thread without polling.
-Short stored results are inlined directly into the completion notification; longer results show an answer-first preview with exact follow-up commands such as `/codex:result <job-id>` or `/codex:apply <job-id>`.
+Short stored results are inlined directly into the completion notification; longer results show an answer-first preview with exact follow-up commands such as `/codex:result --last`, `/codex:result <job-id>`, or `/codex:apply <job-id>`.
 Detached research and task workers use a progress-aware watchdog: they fail on prolonged inactivity, but ongoing session activity extends the run up to a larger hard cap.
 
 Inspect stored review history for the current workspace:
@@ -191,6 +202,7 @@ Inspect stored review history for the current workspace:
 /codex:status
 /codex:jobs
 /codex:result
+/codex:result --last
 /codex:result review-m123abc
 /codex:apply task-m123abc
 /codex:cancel review-m123abc
@@ -223,7 +235,8 @@ Current settings:
 
 - PI-native control plane
 - direct model calls for deterministic review workflows
-- live session handoff for research and task execution
+- foreground session handoff for inline research and task execution
+- detached workers for background review, research, and task execution
 - safety by composition, not tool takeover
 - protected paths should win before generic bash confirmation
 - optional future bridge for exact Codex CLI semantics

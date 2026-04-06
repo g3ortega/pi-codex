@@ -31,12 +31,12 @@ export function renderBackgroundJobLaunchMarkdown(job: CodexBackgroundJob): stri
     `- Created: ${job.createdAt}`,
     "",
     job.jobClass === "review"
-      ? "Use `/codex:status` to track progress, `/codex:result <job-id>` for the final review, or `/codex:cancel <job-id>` to stop it."
+      ? "Use `/codex:status` to track progress, `/codex:result --last` for the newest review result, `/codex:result <job-id>` for this exact review, or `/codex:cancel <job-id>` to stop it."
       : job.jobClass === "research"
-        ? "Use `/codex:status` to track progress, `/codex:result <job-id>` for the final research result, or `/codex:cancel <job-id>` to stop it."
+        ? "Use `/codex:status` to track progress, `/codex:result --last` for the newest research result, `/codex:result <job-id>` for this exact research result, or `/codex:cancel <job-id>` to stop it."
         : job.profile === "write"
-          ? "Use `/codex:status` to track progress, `/codex:result <job-id>` for the final task result, `/codex:apply <job-id>` to apply the stored patch, or `/codex:cancel <job-id>` to stop it."
-          : "Use `/codex:status` to track progress, `/codex:result <job-id>` for the final task result, or `/codex:cancel <job-id>` to stop it.",
+          ? "Use `/codex:status` to track progress, `/codex:result --last` for the newest task result, `/codex:result <job-id>` for this exact task result, `/codex:apply <job-id>` to apply the stored patch, or `/codex:cancel <job-id>` to stop it."
+          : "Use `/codex:status` to track progress, `/codex:result --last` for the newest task result, `/codex:result <job-id>` for this exact task result, or `/codex:cancel <job-id>` to stop it.",
   ];
 
   if (job.jobClass === "review" && job.focusText) {
@@ -193,12 +193,12 @@ export function renderBackgroundJobMarkdown(job: CodexBackgroundJob): string {
     case "completed":
       lines.push(
         job.jobClass === "review"
-          ? "The background review completed. Use `/codex:result " + job.id + "` to inspect the stored review."
+          ? "The background review completed. Use `/codex:result --last` for the newest review result or `/codex:result " + job.id + "` to inspect this stored review."
           : job.jobClass === "research"
-            ? "The background research completed. Use `/codex:result " + job.id + "` to inspect the stored result."
+            ? "The background research completed. Use `/codex:result --last` for the newest research result or `/codex:result " + job.id + "` to inspect this stored result."
             : job.profile === "write"
-              ? "The background write task completed in an isolated worktree. Use `/codex:result " + job.id + "` to inspect the stored result and patch artifact, or `/codex:apply " + job.id + "` to apply it to the live repository."
-              : "The background readonly task completed. Use `/codex:result " + job.id + "` to inspect the stored result.",
+              ? "The background write task completed in an isolated worktree. Use `/codex:result --last` for the newest task result, `/codex:result " + job.id + "` to inspect this stored result and patch artifact, or `/codex:apply " + job.id + "` to apply it to the live repository."
+              : "The background readonly task completed. Use `/codex:result --last` for the newest task result or `/codex:result " + job.id + "` to inspect this stored result.",
       );
       break;
   }
@@ -292,12 +292,12 @@ function extractFinalAnswerPreview(fullResultMarkdown: string | undefined, fallb
 
 function completionNextStepLine(job: CodexBackgroundJob): string {
   return job.jobClass === "review"
-    ? `Use \`/codex:result ${job.id}\` for the full stored review.`
+    ? `Use \`/codex:result --last\` for the newest review result or \`/codex:result ${job.id}\` for this exact stored review.`
     : job.jobClass === "research"
-      ? `Use \`/codex:result ${job.id}\` for the full stored research result.`
+      ? `Use \`/codex:result --last\` for the newest research result or \`/codex:result ${job.id}\` for this exact stored result.`
       : job.profile === "write"
-        ? `Use \`/codex:result ${job.id}\` for the full stored task result or \`/codex:apply ${job.id}\` to apply the stored patch.`
-        : `Use \`/codex:result ${job.id}\` for the full stored task result.`;
+        ? `Use \`/codex:result --last\` for the newest task result, \`/codex:result ${job.id}\` for this exact stored task result, or \`/codex:apply ${job.id}\` to apply the stored patch.`
+        : `Use \`/codex:result --last\` for the newest task result or \`/codex:result ${job.id}\` for this exact stored task result.`;
 }
 
 export function backgroundJobTitle(job: CodexBackgroundJob, includeJobSuffix = false): string {
@@ -407,6 +407,6 @@ export function renderBackgroundJobsOverviewMarkdown(jobs: CodexBackgroundJob[],
     );
   }
 
-  lines.push("", "Use `/codex:status <job-id>` for a single job, `/codex:result <job-id>` for the stored result, `/codex:apply <job-id>` for completed write-task patches, or `/codex:cancel <job-id>` to stop an active job.");
+  lines.push("", "Use `/codex:status <job-id>` for a single job, `/codex:result --last` for the newest stored result, `/codex:result <job-id>` for an exact stored result, `/codex:apply <job-id>` for completed write-task patches, or `/codex:cancel <job-id>` to stop an active job.");
   return `${lines.join("\n").trimEnd()}\n`;
 }

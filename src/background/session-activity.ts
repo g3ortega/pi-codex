@@ -32,10 +32,6 @@ function safeLatestSessionActivityMs(sessionDir: string, floorMs: number): numbe
   return latest;
 }
 
-export function latestSessionActivityMs(sessionDir: string, floorMs = 0): number {
-  return safeLatestSessionActivityMs(sessionDir, floorMs);
-}
-
 export function createSessionActivityWatchdog(options: SessionActivityWatchdogOptions): { clear: () => void } {
   const startedAtMs = Date.now();
   let latestProgressMs = safeLatestSessionActivityMs(options.sessionDir, startedAtMs);

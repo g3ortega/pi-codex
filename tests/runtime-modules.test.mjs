@@ -590,6 +590,64 @@ test("stored background write-task patches refuse to apply after the live repo h
   }
 });
 
+test("registered commands expose useful argument completions and stop suggesting flags after free-form text starts", () => {
+  const commands = new Map();
+
+  registerCodexExtension({
+    registerCommand(name, options) {
+      commands.set(name, options);
+    },
+    on() {},
+    registerMessageRenderer() {},
+    sendMessage() {},
+    sendUserMessage() {},
+    getActiveTools() {
+      return ["read", "grep", "find", "ls"];
+    },
+    getAllTools() {
+      return [];
+    },
+    events: {
+      emit() {},
+    },
+  });
+
+  const reviewCommand = commands.get("codex:review");
+  const taskCommand = commands.get("codex:task");
+  const researchCommand = commands.get("codex:research");
+  const resultCommand = commands.get("codex:result");
+
+  assert.equal(typeof reviewCommand?.getArgumentCompletions, "function");
+  assert.equal(typeof taskCommand?.getArgumentCompletions, "function");
+  assert.equal(typeof researchCommand?.getArgumentCompletions, "function");
+  assert.equal(typeof resultCommand?.getArgumentCompletions, "function");
+
+  const reviewRootCompletions = reviewCommand.getArgumentCompletions("");
+  assert.ok(reviewRootCompletions.some((item) => item.label === "--background"));
+  assert.ok(reviewRootCompletions.some((item) => item.label === "--scope working-tree"));
+
+  const scopeValueCompletions = reviewCommand.getArgumentCompletions("--scope ");
+  assert.deepEqual(
+    scopeValueCompletions.map((item) => item.label),
+    ["working-tree", "branch"],
+  );
+
+  const quotedBaseValueCompletions = reviewCommand.getArgumentCompletions('--base "orig');
+  assert.ok(quotedBaseValueCompletions.some((item) => item.label === "origin/main"));
+
+  const taskRootCompletions = taskCommand.getArgumentCompletions("");
+  assert.ok(taskRootCompletions.some((item) => item.label === "--readonly"));
+  assert.ok(taskRootCompletions.some((item) => item.label === "--write"));
+  assert.ok(taskRootCompletions.some((item) => item.label === "--background"));
+  assert.equal(taskCommand.getArgumentCompletions("diagnose auth refresh"), null);
+
+  const researchRootCompletions = researchCommand.getArgumentCompletions("");
+  assert.ok(researchRootCompletions.some((item) => item.label === "--background"));
+
+  const resultRootCompletions = resultCommand.getArgumentCompletions("");
+  assert.ok(resultRootCompletions.some((item) => item.label === "--last"));
+});
+
 test("input fallback routes /codex:result directly when normal slash dispatch misses", async () => {
   const repoDir = createGitRepo("pi-codex-input-result-");
   const homeDir = makeTempDir("pi-codex-home-");
@@ -709,6 +767,295 @@ test("input fallback routes /codex:result directly when normal slash dispatch mi
       assert.ok(
         reports.some((entry) => String(entry.message.content).includes("RESULT_FROM_FALLBACK")),
         "fallback input route should emit the stored result as a report",
+      );
+    });
+  } finally {
+    fs.rmSync(repoDir, { recursive: true, force: true });
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("input fallback routes /codex:result --last to the newest finished result", async () => {
+  const repoDir = createGitRepo("pi-codex-input-result-last-");
+  const homeDir = makeTempDir("pi-codex-home-");
+
+  try {
+    await withHomeDir(homeDir, async () => {
+      const reports = [];
+      const handlers = new Map();
+
+      registerCodexExtension({
+        registerCommand() {},
+        on(name, handler) {
+          handlers.set(name, handler);
+        },
+        registerMessageRenderer() {},
+        sendMessage(message, options) {
+          reports.push({ message, options });
+        },
+        sendUserMessage() {
+          throw new Error("sendUserMessage should not be called for result fallback");
+        },
+        getActiveTools() {
+          return ["read", "grep", "find", "ls"];
+        },
+        getAllTools() {
+          return [];
+        },
+        events: {
+          emit() {},
+        },
+      });
+
+      const completedJob = buildResearchJob(repoDir, {
+        id: "research-completed",
+        createdAt: "2026-04-06T10:00:00.000Z",
+        updatedAt: "2026-04-06T10:03:00.000Z",
+        startedAt: "2026-04-06T10:00:10.000Z",
+        completedAt: "2026-04-06T10:03:00.000Z",
+        status: "completed",
+        phase: "completed",
+      });
+      createResearchBackgroundJob(completedJob, buildResearchSnapshot(repoDir, { request: "older completed research" }));
+      writeResearchJobResult(
+        repoDir,
+        completedJob.id,
+        {
+          request: "older completed research",
+          finalText: "BACKGROUND_RESULT",
+          activeToolNames: ["read", "find"],
+          missingToolNames: [],
+        },
+        "# Codex Research\n\nBACKGROUND_RESULT\n",
+      );
+
+      const runningJob = buildResearchJob(repoDir, {
+        id: "research-running",
+        createdAt: "2026-04-06T10:04:00.000Z",
+        updatedAt: "2026-04-06T10:05:00.000Z",
+        startedAt: "2026-04-06T10:04:10.000Z",
+        status: "running",
+        phase: "agent-turn",
+        runnerPid: process.pid,
+      });
+      createResearchBackgroundJob(runningJob, buildResearchSnapshot(repoDir, { request: "newer running research" }));
+
+      storeReviewRun(
+        repoDir,
+        reviewRun({
+          id: "review-latest",
+          createdAt: "2026-04-06T10:06:00.000Z",
+          result: {
+            verdict: "approve",
+            summary: "LATEST_REVIEW_RESULT",
+            findings: [],
+            next_steps: [],
+          },
+        }),
+        20,
+      );
+
+      const inputHandler = handlers.get("input");
+      assert.equal(typeof inputHandler, "function");
+
+      const result = await inputHandler(
+        {
+          type: "input",
+          text: "/codex:result --last",
+          source: "interactive",
+        },
+        {
+          ui: {
+            notify() {},
+            setStatus() {},
+            theme: {
+              fg(_token, value) {
+                return value;
+              },
+              bg(_token, value) {
+                return value;
+              },
+              bold(value) {
+                return value;
+              },
+            },
+          },
+          hasUI: false,
+          cwd: repoDir,
+          sessionManager: {
+            getSessionId() {
+              return "session-a";
+            },
+            getSessionFile() {
+              return "/tmp/session-a.jsonl";
+            },
+          },
+          modelRegistry: {},
+          model: {
+            provider: "openai-codex",
+            id: "gpt-5.3-codex",
+          },
+          isIdle() {
+            return true;
+          },
+          signal: undefined,
+          abort() {},
+          hasPendingMessages() {
+            return false;
+          },
+          shutdown() {},
+          getContextUsage() {
+            return undefined;
+          },
+          compact() {},
+          getSystemPrompt() {
+            return "";
+          },
+        },
+      );
+
+      assert.deepEqual(result, { action: "handled" });
+      assert.ok(
+        reports.some((entry) => String(entry.message.content).includes("LATEST_REVIEW_RESULT")),
+        "explicit --last should resolve to the newest finished result, even when a newer background job is still running",
+      );
+      assert.ok(
+        reports.every((entry) => !String(entry.message.content).includes("BACKGROUND_RESULT")),
+        "explicit --last should ignore older background results when a newer foreground review exists",
+      );
+    });
+  } finally {
+    fs.rmSync(repoDir, { recursive: true, force: true });
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("input fallback routes /codex:result --last to a newer failed background job when it is newer than stored reviews", async () => {
+  const repoDir = createGitRepo("pi-codex-input-result-last-failed-");
+  const homeDir = makeTempDir("pi-codex-home-");
+
+  try {
+    await withHomeDir(homeDir, async () => {
+      const reports = [];
+      const handlers = new Map();
+
+      registerCodexExtension({
+        registerCommand() {},
+        on(name, handler) {
+          handlers.set(name, handler);
+        },
+        registerMessageRenderer() {},
+        sendMessage(message, options) {
+          reports.push({ message, options });
+        },
+        sendUserMessage() {
+          throw new Error("sendUserMessage should not be called for result fallback");
+        },
+        getActiveTools() {
+          return ["read", "grep", "find", "ls"];
+        },
+        getAllTools() {
+          return [];
+        },
+        events: {
+          emit() {},
+        },
+      });
+
+      storeReviewRun(
+        repoDir,
+        reviewRun({
+          id: "review-older",
+          createdAt: "2026-04-06T10:06:00.000Z",
+          result: {
+            verdict: "approve",
+            summary: "OLDER_REVIEW_RESULT",
+            findings: [],
+            next_steps: [],
+          },
+        }),
+        20,
+      );
+
+      const failedJob = buildResearchJob(repoDir, {
+        id: "research-failed-latest",
+        createdAt: "2026-04-06T10:07:00.000Z",
+        updatedAt: "2026-04-06T10:08:00.000Z",
+        startedAt: "2026-04-06T10:07:10.000Z",
+        completedAt: "2026-04-06T10:08:00.000Z",
+        status: "failed",
+        phase: "failed",
+        errorMessage: "LATEST_FAILED_RESULT",
+      });
+      createResearchBackgroundJob(failedJob, buildResearchSnapshot(repoDir, { request: "newer failed research" }));
+
+      const inputHandler = handlers.get("input");
+      assert.equal(typeof inputHandler, "function");
+
+      const result = await inputHandler(
+        {
+          type: "input",
+          text: "/codex:result --last",
+          source: "interactive",
+        },
+        {
+          ui: {
+            notify() {},
+            setStatus() {},
+            theme: {
+              fg(_token, value) {
+                return value;
+              },
+              bg(_token, value) {
+                return value;
+              },
+              bold(value) {
+                return value;
+              },
+            },
+          },
+          hasUI: false,
+          cwd: repoDir,
+          sessionManager: {
+            getSessionId() {
+              return "session-a";
+            },
+            getSessionFile() {
+              return "/tmp/session-a.jsonl";
+            },
+          },
+          modelRegistry: {},
+          model: {
+            provider: "openai-codex",
+            id: "gpt-5.3-codex",
+          },
+          isIdle() {
+            return true;
+          },
+          signal: undefined,
+          abort() {},
+          hasPendingMessages() {
+            return false;
+          },
+          shutdown() {},
+          getContextUsage() {
+            return undefined;
+          },
+          compact() {},
+          getSystemPrompt() {
+            return "";
+          },
+        },
+      );
+
+      assert.deepEqual(result, { action: "handled" });
+      assert.ok(
+        reports.some((entry) => String(entry.message.content).includes("LATEST_FAILED_RESULT")),
+        "explicit --last should surface the newest failed background job when it is newer than stored reviews",
+      );
+      assert.ok(
+        reports.every((entry) => !String(entry.message.content).includes("OLDER_REVIEW_RESULT")),
+        "explicit --last should not hide a newer failed background job behind an older stored review",
       );
     });
   } finally {

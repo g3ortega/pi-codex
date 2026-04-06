@@ -4,30 +4,30 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { createSessionActivityWatchdog, latestSessionActivityMs } from "../src/background/session-activity.ts";
+import { createSessionActivityWatchdog } from "../src/background/session-activity.ts";
 
 function makeTempSessionDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "pi-codex-session-activity-"));
 }
 
-test("latestSessionActivityMs returns the newest session file mtime and tolerates missing dirs", () => {
-  const missing = path.join(os.tmpdir(), "pi-codex-session-activity-missing");
-  const floor = Date.now() - 1_000;
-  assert.equal(latestSessionActivityMs(missing, floor), floor);
+test("session activity watchdog tolerates missing dirs and reports idle", async () => {
+  const missing = path.join(os.tmpdir(), `pi-codex-session-activity-missing-${Date.now()}`);
 
-  const dir = makeTempSessionDir();
-  const fileA = path.join(dir, "a.jsonl");
-  const fileB = path.join(dir, "b.jsonl");
-  fs.writeFileSync(fileA, "a");
-  fs.writeFileSync(fileB, "b");
+  const result = await new Promise((resolve) => {
+    const watchdog = createSessionActivityWatchdog({
+      sessionDir: missing,
+      idleTimeoutMs: 40,
+      hardTimeoutMs: 400,
+      unrefTimer: false,
+      onTimeout: (kind) => {
+        watchdog.clear();
+        resolve(kind);
+      },
+    });
+  });
 
-  const first = new Date(Date.now() - 2_000);
-  const second = new Date(Date.now() - 500);
-  fs.utimesSync(fileA, first, first);
-  fs.utimesSync(fileB, second, second);
-
-  assert.equal(latestSessionActivityMs(dir, 0), second.getTime());
- });
+  assert.equal(result, "idle");
+});
 
 test("session activity watchdog times out on idle when no new session activity appears", async () => {
   const dir = makeTempSessionDir();
