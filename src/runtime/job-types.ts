@@ -1,8 +1,10 @@
 import type { StoredReviewRun, ReviewVerdict } from "../review/review-schema.js";
 
-export type CodexJobClass = "review" | "research";
+export type CodexJobClass = "review" | "research" | "task";
 export type CodexReviewJobKind = "review" | "adversarial-review";
 export type CodexResearchJobKind = "research";
+export type CodexTaskJobKind = "task";
+export type CodexTaskExecutionProfile = "readonly" | "write";
 export type CodexJobStatus =
   | "queued"
   | "starting"
@@ -45,6 +47,29 @@ export interface ResearchSnapshot {
 
 export interface ResearchJobResultPayload {
   request: string;
+  finalText: string;
+  activeToolNames: string[];
+  missingToolNames: string[];
+}
+
+export interface TaskSnapshot {
+  kind: CodexTaskJobKind;
+  profile: CodexTaskExecutionProfile;
+  repoRoot: string;
+  branch: string;
+  request: string;
+  modelSpec: string;
+  thinkingLevel?: string;
+  requestedToolNames: string[];
+  safeBuiltinTools: string[];
+  activeWebTools: string[];
+  inactiveAvailableWebTools: string[];
+  extensionPaths: string[];
+}
+
+export interface TaskJobResultPayload {
+  request: string;
+  profile: CodexTaskExecutionProfile;
   finalText: string;
   activeToolNames: string[];
   missingToolNames: string[];
@@ -108,7 +133,24 @@ export interface ResearchBackgroundJob extends BaseBackgroundJob {
   sessionDir: string;
 }
 
-export type CodexBackgroundJob = ReviewBackgroundJob | ResearchBackgroundJob;
+export interface TaskBackgroundJob extends BaseBackgroundJob {
+  jobClass: "task";
+  kind: CodexTaskJobKind;
+  profile: CodexTaskExecutionProfile;
+  request: string;
+  requestSummary: string;
+  thinkingLevel?: string;
+  requestedToolNames: string[];
+  activeToolNames: string[];
+  safeBuiltinTools: string[];
+  activeWebTools: string[];
+  inactiveAvailableWebTools: string[];
+  extensionPaths: string[];
+  missingToolNames?: string[];
+  sessionDir: string;
+}
+
+export type CodexBackgroundJob = ReviewBackgroundJob | ResearchBackgroundJob | TaskBackgroundJob;
 
 export interface JobStatusSnapshot {
   id: string;
@@ -140,6 +182,10 @@ export function isReviewBackgroundJob(job: CodexBackgroundJob): job is ReviewBac
 
 export function isResearchBackgroundJob(job: CodexBackgroundJob): job is ResearchBackgroundJob {
   return job.jobClass === "research";
+}
+
+export function isTaskBackgroundJob(job: CodexBackgroundJob): job is TaskBackgroundJob {
+  return job.jobClass === "task";
 }
 
 export function backgroundJobSubject(job: CodexBackgroundJob): string {

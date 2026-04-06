@@ -137,6 +137,15 @@ test("task prompt builder adapts inspection guidance to the active tool set", ()
   assert.doesNotMatch(prompt, /`find`, `ls`, `grep`, `read`/);
 });
 
+test("task prompt builder advertises active web tools when they are available", () => {
+  const prompt = buildTaskPrompt("verify current docs", ["read", "bash", "web_search"], {
+    readOnly: true,
+    activeWebTools: ["web_search", "fetch_content"],
+  });
+  assert.match(prompt, /Active web tools are available in this session: fetch_content, web_search\./);
+  assert.match(prompt, /Use them when the request requires external verification, official documentation, or current ecosystem checks\./);
+});
+
 test("research prompt builder adapts to active and inactive research tools", () => {
   const prompt = buildResearchPrompt("compare PI and Codex", {
     activeWebTools: ["web_search", "fetch_content"],

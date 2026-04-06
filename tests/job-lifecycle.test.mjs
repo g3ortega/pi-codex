@@ -6,10 +6,12 @@ import path from "node:path";
 
 import { runDetachedResearchJob } from "../src/background/research-job.ts";
 import { runDetachedReviewJob } from "../src/background/review-job.ts";
+import { runDetachedTaskJob } from "../src/background/task-job.ts";
 import {
   cancelBackgroundJob,
   createResearchBackgroundJob,
   createReviewBackgroundJob,
+  createTaskBackgroundJob,
   findBackgroundJob,
   getJobLogFile,
   getJobResultFile,
@@ -17,6 +19,7 @@ import {
   getJobSessionDir,
   getJobSnapshotFile,
   readBackgroundJob,
+  readTaskJobResult,
   updateBackgroundJob,
 } from "../src/runtime/job-store.ts";
 
@@ -124,6 +127,58 @@ function buildResearchSnapshot(workspaceRoot, overrides = {}) {
     request: "investigate background mode",
     modelSpec: "openai-codex/gpt-5.3-codex",
     requestedToolNames: ["read", "find"],
+    safeBuiltinTools: ["read", "grep", "find", "ls"],
+    activeWebTools: [],
+    inactiveAvailableWebTools: [],
+    extensionPaths: [],
+    ...overrides,
+  };
+}
+
+function buildTaskJob(workspaceRoot, overrides = {}) {
+  const id = overrides.id ?? "task-job";
+  return {
+    id,
+    jobClass: "task",
+    kind: "task",
+    profile: "readonly",
+    workspaceRoot,
+    cwd: workspaceRoot,
+    repoRoot: workspaceRoot,
+    branch: "main",
+    request: "diagnose auth refresh",
+    requestSummary: "diagnose auth refresh",
+    modelProvider: "openai-codex",
+    modelId: "gpt-5.3-codex",
+    modelSpec: "openai-codex/gpt-5.3-codex",
+    createdAt: iso(),
+    updatedAt: iso(),
+    status: "queued",
+    phase: "queued",
+    requestedToolNames: ["read", "grep", "find", "ls"],
+    activeToolNames: [],
+    safeBuiltinTools: ["read", "grep", "find", "ls"],
+    activeWebTools: [],
+    inactiveAvailableWebTools: [],
+    extensionPaths: [],
+    sessionDir: getJobSessionDir(workspaceRoot, id),
+    snapshotFile: getJobSnapshotFile(workspaceRoot, id),
+    resultFile: getJobResultFile(workspaceRoot, id),
+    resultJsonFile: getJobResultJsonFile(workspaceRoot, id),
+    logFile: getJobLogFile(workspaceRoot, id),
+    ...overrides,
+  };
+}
+
+function buildTaskSnapshot(workspaceRoot, overrides = {}) {
+  return {
+    kind: "task",
+    profile: "readonly",
+    repoRoot: workspaceRoot,
+    branch: "main",
+    request: "diagnose auth refresh",
+    modelSpec: "openai-codex/gpt-5.3-codex",
+    requestedToolNames: ["read", "grep", "find", "ls"],
     safeBuiltinTools: ["read", "grep", "find", "ls"],
     activeWebTools: [],
     inactiveAvailableWebTools: [],
@@ -271,8 +326,22 @@ test("background job store preserves terminal states and reconciles stale runner
         buildResearchSnapshot(workspaceRoot),
       );
 
+      createTaskBackgroundJob(
+        buildTaskJob(workspaceRoot, {
+          id: "task-cancelling",
+          createdAt: iso(-10_000),
+          updatedAt: iso(-10_000),
+          lastHeartbeatAt: iso(-10_000),
+          status: "cancelling",
+          phase: "cancelling",
+          runnerPid: null,
+        }),
+        buildTaskSnapshot(workspaceRoot),
+      );
+
       assert.equal(readBackgroundJob(workspaceRoot, "review-stale")?.status, "lost");
       assert.equal(readBackgroundJob(workspaceRoot, "research-cancelling")?.status, "cancelled");
+      assert.equal(readBackgroundJob(workspaceRoot, "task-cancelling")?.status, "cancelled");
     });
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -307,6 +376,16 @@ test("detached runner entry paths short-circuit already-cancelled jobs before li
         buildResearchSnapshot(workspaceRoot),
       );
 
+      createTaskBackgroundJob(
+        buildTaskJob(workspaceRoot, {
+          id: "task-cancelling",
+          status: "cancelling",
+          phase: "cancelling",
+          updatedAt: iso(),
+        }),
+        buildTaskSnapshot(workspaceRoot),
+      );
+
       const reviewResult = await runDetachedReviewJob(
         { cwd: workspaceRoot },
         DUMMY_SETTINGS,
@@ -335,6 +414,109 @@ test("detached runner entry paths short-circuit already-cancelled jobs before li
         "research-cancelling",
       );
       assert.equal(researchResult.status, "cancelled");
+
+      const taskResult = await runDetachedTaskJob(
+        {
+          getAllTools() {
+            return [];
+          },
+          setActiveTools() {},
+          on() {},
+          sendUserMessage() {
+            throw new Error("sendUserMessage should not be reached for pre-cancelled task jobs");
+          },
+        },
+        {
+          cwd: workspaceRoot,
+          abort() {
+            throw new Error("abort should not be reached for pre-cancelled task jobs");
+          },
+        },
+        DUMMY_SETTINGS,
+        "task-cancelling",
+      );
+      assert.equal(taskResult.status, "cancelled");
+    });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("detached readonly task runner completes and persists a stored result", async () => {
+  const root = makeTempDir("pi-codex-task-complete-");
+  const homeDir = path.join(root, "home");
+  const workspaceRoot = path.join(root, "workspace");
+  fs.mkdirSync(workspaceRoot, { recursive: true });
+
+  try {
+    await withHomeDir(homeDir, async () => {
+      createTaskBackgroundJob(
+        buildTaskJob(workspaceRoot, {
+          id: "task-complete",
+          requestedToolNames: ["read", "grep", "web_search"],
+          safeBuiltinTools: ["read", "grep", "find", "ls"],
+          activeWebTools: ["web_search"],
+        }),
+        buildTaskSnapshot(workspaceRoot, {
+          request: "diagnose auth refresh and verify current docs",
+          requestedToolNames: ["read", "grep", "web_search"],
+          activeWebTools: ["web_search"],
+        }),
+      );
+
+      const handlers = new Map();
+      let activated = [];
+      const result = await runDetachedTaskJob(
+        {
+          getAllTools() {
+            return [
+              { name: "read" },
+              { name: "grep" },
+              { name: "web_search" },
+            ];
+          },
+          setActiveTools(toolNames) {
+            activated = [...toolNames];
+          },
+          on(event, handler) {
+            handlers.set(event, handler);
+          },
+          sendUserMessage(prompt) {
+            handlers.get("before_agent_start")?.({ prompt });
+            queueMicrotask(() => {
+              handlers.get("agent_end")?.({
+                messages: [
+                  {
+                    role: "assistant",
+                    content: [{ type: "text", text: "Diagnosis complete. Proposed patch: restore auth refresh backoff." }],
+                  },
+                ],
+              });
+            });
+          },
+        },
+        {
+          cwd: workspaceRoot,
+          abort() {},
+        },
+        DUMMY_SETTINGS,
+        "task-complete",
+      );
+
+      assert.equal(result.status, "completed");
+      assert.deepEqual(activated, ["read", "grep", "web_search"]);
+
+      const stored = readTaskJobResult(workspaceRoot, "task-complete");
+      assert.equal(stored?.request, "diagnose auth refresh and verify current docs");
+      assert.equal(stored?.profile, "readonly");
+      assert.match(stored?.finalText ?? "", /Diagnosis complete/);
+      assert.deepEqual(stored?.activeToolNames, ["read", "grep", "web_search"]);
+
+      const markdown = fs.readFileSync(getJobResultFile(workspaceRoot, "task-complete"), "utf8");
+      assert.match(markdown, /# Codex Task/);
+      assert.match(markdown, /Mode: readonly/);
+      assert.match(markdown, /diagnose auth refresh and verify current docs/);
+      assert.match(markdown, /Diagnosis complete/);
     });
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

@@ -20,6 +20,8 @@ export interface BackgroundResearchToolPlan {
   extensionPaths: string[];
 }
 
+export type BackgroundReadOnlyToolPlan = BackgroundResearchToolPlan;
+
 type ToolLike = {
   name: string;
   sourceInfo?: {
@@ -127,6 +129,10 @@ export function inspectResearchTools(pi: ExtensionAPI): ResearchToolSnapshot {
 }
 
 export function buildBackgroundResearchToolPlan(pi: ExtensionAPI): BackgroundResearchToolPlan {
+  return buildBackgroundReadOnlyToolPlan(pi);
+}
+
+export function buildBackgroundReadOnlyToolPlan(pi: ExtensionAPI): BackgroundReadOnlyToolPlan {
   const activeToolNames = new Set(pi.getActiveTools());
   const allTools = pi.getAllTools();
   const activeTools = allTools.filter((tool) => activeToolNames.has(tool.name));
@@ -175,9 +181,10 @@ export function inspectResearchToolsFromNames(pi: ExtensionAPI, activeToolNames:
 export function buildTaskPrompt(
   request: string,
   activeToolNames: string[] = ["find", "ls", "grep", "read", "bash"],
-  options: { readOnly?: boolean } = {},
+  options: { readOnly?: boolean; activeWebTools?: string[] } = {},
 ): string {
   const readOnly = options.readOnly === true;
+  const activeWebTools = uniqueSorted(options.activeWebTools ?? []);
 
   return [
     "<task>",
@@ -201,6 +208,12 @@ export function buildTaskPrompt(
     "",
     "<tooling_preference>",
     ...buildInspectionPreferenceLines(activeToolNames, activeToolNames.includes("bash")),
+    ...(activeWebTools.length > 0
+      ? [
+        `Active web tools are available in this session: ${activeWebTools.join(", ")}.`,
+        "Use them when the request requires external verification, official documentation, or current ecosystem checks.",
+      ]
+      : []),
     "</tooling_preference>",
     "",
     "<verification_loop>",

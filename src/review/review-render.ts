@@ -151,21 +151,21 @@ export function renderTaskBackgroundBoundaryMarkdown(
   const lines = [
     "# Codex Task",
     "",
-    "Background task workers are not implemented yet.",
+    "Background write-capable task workers are not implemented yet.",
     "",
     "Current boundary:",
-    "- `/codex:review --background` and `/codex:research --background` already run in detached Codex workers and notify the originating PI session on completion.",
-    "- `/codex:task` still executes inside the current PI session.",
+    "- `/codex:review --background`, `/codex:research --background`, and `/codex:task --background --readonly ...` already run in detached Codex workers and notify the originating PI session on completion.",
+    "- `/codex:task` and `/codex:task --write ...` still execute inside the current PI session.",
     "- `--background`, `--readonly`, `--write`, and `--model` are treated as host-side control flags and are not forwarded into the task text.",
     "",
     "Recommended alternatives right now:",
+    "- Use `/codex:task --background --readonly ...` for detached diagnosis or patch planning.",
     "- Use `/codex:research --background ...` for detached read-only repo analysis, architecture review, and external research.",
-    "- Use `/codex:task --readonly ...` for inline read-only diagnosis or patch planning in the current session.",
     "- Use `/codex:task ...` for inline implementation in the current session.",
   ];
 
   if (options.readOnly) {
-    lines.push("- Read-only task workers are the first planned background task profile.");
+    lines.push("- This request already asked for a read-only worker and should use `/codex:task --background --readonly ...` instead.");
   }
   if (options.modelSpec) {
     lines.push(`- Requested model override: \`${options.modelSpec}\``);

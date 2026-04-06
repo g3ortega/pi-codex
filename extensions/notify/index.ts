@@ -8,6 +8,7 @@ import {
   readBackgroundJob,
   readResearchJobResult,
   readReviewJobResult,
+  readTaskJobResult,
 } from "../../src/runtime/job-store.js";
 import {
   backgroundJobNotificationTitle,
@@ -93,6 +94,11 @@ function summarizeCompletion(job: CodexBackgroundJob): string | undefined {
 
   if (job.jobClass === "research" && job.status === "completed") {
     const payload = readResearchJobResult(job.workspaceRoot, job.id);
+    return payload?.finalText;
+  }
+
+  if (job.jobClass === "task" && job.status === "completed") {
+    const payload = readTaskJobResult(job.workspaceRoot, job.id);
     return payload?.finalText;
   }
 
@@ -184,7 +190,9 @@ function notifyCompletion(pi: ExtensionAPI, state: NotifyState, job: CodexBackgr
   if (state.lastUiContext?.hasUI) {
     const label = job.jobClass === "review"
       ? `Codex ${job.kind === "adversarial-review" ? "adversarial review" : "review"} ${job.status}`
-      : `Codex research ${job.status}`;
+      : job.jobClass === "research"
+        ? `Codex research ${job.status}`
+        : `Codex task ${job.status}`;
     state.lastUiContext.ui.notify(label, variantForUi(job));
   }
 

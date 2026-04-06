@@ -1,4 +1,4 @@
-import { backgroundJobSubject, isResearchBackgroundJob } from "./job-types.js";
+import { backgroundJobSubject, isResearchBackgroundJob, isTaskBackgroundJob } from "./job-types.js";
 import type { CodexBackgroundJob } from "./job-types.js";
 
 function formatWhen(value: string | undefined): string {
@@ -11,7 +11,7 @@ export function renderBackgroundJobLaunchMarkdown(job: CodexBackgroundJob): stri
   const lines = [
     `# ${title}`,
     "",
-    job.jobClass === "review" ? "Background review launched." : "Background research launched.",
+    job.jobClass === "review" ? "Background review launched." : job.jobClass === "research" ? "Background research launched." : "Background readonly task launched.",
     "",
     `- Job ID: ${job.id}`,
     `- Status: ${job.status}`,
@@ -23,13 +23,18 @@ export function renderBackgroundJobLaunchMarkdown(job: CodexBackgroundJob): stri
     "",
     job.jobClass === "review"
       ? "Use `/codex:status` to track progress, `/codex:result <job-id>` for the final review, or `/codex:cancel <job-id>` to stop it."
-      : "Use `/codex:status` to track progress, `/codex:result <job-id>` for the final research result, or `/codex:cancel <job-id>` to stop it.",
+      : job.jobClass === "research"
+        ? "Use `/codex:status` to track progress, `/codex:result <job-id>` for the final research result, or `/codex:cancel <job-id>` to stop it."
+        : "Use `/codex:status` to track progress, `/codex:result <job-id>` for the final task result, or `/codex:cancel <job-id>` to stop it.",
   ];
 
   if (job.jobClass === "review" && job.focusText) {
     lines.splice(9, 0, `- Focus: ${job.focusText}`);
   }
-  if (isResearchBackgroundJob(job)) {
+  if (isTaskBackgroundJob(job)) {
+    lines.push(`- Mode: ${job.profile}`);
+  }
+  if (isResearchBackgroundJob(job) || isTaskBackgroundJob(job)) {
     lines.push(
       "",
       "Tool surface:",
@@ -76,7 +81,10 @@ export function renderBackgroundJobMarkdown(job: CodexBackgroundJob): string {
   if (job.jobClass === "review" && job.resultVerdict) {
     lines.push(`- Verdict: ${job.resultVerdict}`);
   }
-  if (isResearchBackgroundJob(job)) {
+  if (isTaskBackgroundJob(job)) {
+    lines.push(`- Mode: ${job.profile}`);
+  }
+  if (isResearchBackgroundJob(job) || isTaskBackgroundJob(job)) {
     lines.push(`- Safe built-in tools: ${job.safeBuiltinTools.length > 0 ? job.safeBuiltinTools.join(", ") : "none"}`);
     lines.push(`- Active web tools: ${job.activeWebTools.length > 0 ? job.activeWebTools.join(", ") : "none"}`);
     lines.push(`- Activated tools: ${job.activeToolNames.length > 0 ? job.activeToolNames.join(", ") : "pending"}`);
@@ -94,29 +102,57 @@ export function renderBackgroundJobMarkdown(job: CodexBackgroundJob): string {
     case "queued":
     case "starting":
     case "running":
-      lines.push(job.jobClass === "review" ? "The background review is still in progress." : "The background research job is still in progress.");
+      lines.push(
+        job.jobClass === "review"
+          ? "The background review is still in progress."
+          : job.jobClass === "research"
+            ? "The background research job is still in progress."
+            : "The background readonly task is still in progress.",
+      );
       break;
     case "cancelling":
       lines.push(
         job.jobClass === "review"
           ? "Cancellation was requested. Waiting for the background review runner to stop."
-          : "Cancellation was requested. Waiting for the background research runner to stop.",
+          : job.jobClass === "research"
+            ? "Cancellation was requested. Waiting for the background research runner to stop."
+            : "Cancellation was requested. Waiting for the background task runner to stop.",
       );
       break;
     case "cancelled":
-      lines.push(job.jobClass === "review" ? "The background review was cancelled before completion." : "The background research job was cancelled before completion.");
+      lines.push(
+        job.jobClass === "review"
+          ? "The background review was cancelled before completion."
+          : job.jobClass === "research"
+            ? "The background research job was cancelled before completion."
+            : "The background readonly task was cancelled before completion.",
+      );
       break;
     case "lost":
-      lines.push(job.jobClass === "review" ? "The background review runner disappeared before it reported a terminal result." : "The background research runner disappeared before it reported a terminal result.");
+      lines.push(
+        job.jobClass === "review"
+          ? "The background review runner disappeared before it reported a terminal result."
+          : job.jobClass === "research"
+            ? "The background research runner disappeared before it reported a terminal result."
+            : "The background task runner disappeared before it reported a terminal result.",
+      );
       break;
     case "failed":
-      lines.push(job.jobClass === "review" ? "The background review failed before producing a result." : "The background research job failed before producing a result.");
+      lines.push(
+        job.jobClass === "review"
+          ? "The background review failed before producing a result."
+          : job.jobClass === "research"
+            ? "The background research job failed before producing a result."
+            : "The background readonly task failed before producing a result.",
+      );
       break;
     case "completed":
       lines.push(
         job.jobClass === "review"
           ? "The background review completed. Use `/codex:result " + job.id + "` to inspect the stored review."
-          : "The background research completed. Use `/codex:result " + job.id + "` to inspect the stored result.",
+          : job.jobClass === "research"
+            ? "The background research completed. Use `/codex:result " + job.id + "` to inspect the stored result."
+            : "The background readonly task completed. Use `/codex:result " + job.id + "` to inspect the stored result.",
       );
       break;
   }
@@ -141,7 +177,9 @@ function summarizeText(text: string, limit = 320): string {
 export function backgroundJobTitle(job: CodexBackgroundJob, includeJobSuffix = false): string {
   const base = job.jobClass === "review"
     ? (job.kind === "adversarial-review" ? "Codex Adversarial Review" : "Codex Review")
-    : "Codex Research";
+    : job.jobClass === "research"
+      ? "Codex Research"
+      : "Codex Task";
   return includeJobSuffix ? `${base} Job` : base;
 }
 
@@ -198,6 +236,9 @@ export function renderBackgroundJobCompletionMarkdown(
   if (job.jobClass === "review" && job.resultVerdict) {
     lines.push(`- Verdict: ${job.resultVerdict}`);
   }
+  if (isTaskBackgroundJob(job)) {
+    lines.push(`- Mode: ${job.profile}`);
+  }
 
   if (summaryText?.trim()) {
     lines.push("", "Summary:", "", summarizeText(summaryText));
@@ -209,7 +250,9 @@ export function renderBackgroundJobCompletionMarkdown(
     "",
     job.jobClass === "review"
       ? `Use \`/codex:result ${job.id}\` for the full stored review.`
-      : `Use \`/codex:result ${job.id}\` for the full stored research result.`,
+      : job.jobClass === "research"
+        ? `Use \`/codex:result ${job.id}\` for the full stored research result.`
+        : `Use \`/codex:result ${job.id}\` for the full stored task result.`,
   );
 
   return `${lines.join("\n").trimEnd()}\n`;

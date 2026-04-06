@@ -9,6 +9,11 @@ import {
   launchBackgroundResearchJob,
   runDetachedResearchJob,
 } from "../../src/background/research-job.js";
+import {
+  internalTaskJobCommandName,
+  launchBackgroundReadonlyTaskJob,
+  runDetachedTaskJob,
+} from "../../src/background/task-job.js";
 import { splitLeadingOptionTokens, splitShellLikeArgs } from "../../src/runtime/arg-parser.js";
 import { detectBuiltinAlternativeForBash } from "../../src/runtime/bash-alternatives.js";
 import {
@@ -256,21 +261,35 @@ async function handleTaskCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext,
   }
 
   if (options.background) {
+    if (options.profile !== "readonly") {
+      sendReport(
+        pi,
+        "Codex Task",
+        renderTaskBackgroundBoundaryMarkdown(request, {
+          readOnly: false,
+          modelSpec: options.modelSpec,
+        }),
+        "warning",
+      );
+      return false;
+    }
+
+    const job = await launchBackgroundReadonlyTaskJob(pi, ctx, settings, request, options.modelSpec);
     sendReport(
       pi,
-      "Codex Task",
-      renderTaskBackgroundBoundaryMarkdown(request, {
-        readOnly: options.profile === "readonly",
-        modelSpec: options.modelSpec,
-      }),
-      "warning",
+      "Codex Task Job",
+      renderBackgroundJobLaunchMarkdown(job),
+      "info",
     );
     return false;
   }
 
   const deliverAs = ctx.isIdle() ? undefined : "followUp";
   pi.sendUserMessage(
-    buildTaskPrompt(request, pi.getActiveTools(), { readOnly: options.profile === "readonly" }),
+    buildTaskPrompt(request, pi.getActiveTools(), {
+      readOnly: options.profile === "readonly",
+      activeWebTools: inspectResearchTools(pi).activeWebTools,
+    }),
     deliverAs ? { deliverAs } : undefined,
   );
   sendReport(
@@ -651,6 +670,16 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
         throw new Error("Background research runner requires a job id.");
       }
       await runDetachedResearchJob(pi, ctx, loadCodexSettings(ctx.cwd), jobId);
+    },
+  });
+  pi.registerCommand(internalTaskJobCommandName(), {
+    description: "Internal pi-codex background task runner",
+    handler: async (args, ctx) => {
+      const jobId = args.trim();
+      if (!jobId) {
+        throw new Error("Background task runner requires a job id.");
+      }
+      await runDetachedTaskJob(pi, ctx, loadCodexSettings(ctx.cwd), jobId);
     },
   });
   registerCommandPair(pi, "codex:status", "codex-status", "Show stored Codex review history for the current workspace", async (args, ctx) => {

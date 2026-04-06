@@ -11,6 +11,9 @@ import {
   type ReviewBackgroundJob,
   type ReviewJobResultPayload,
   type ReviewSnapshot,
+  type TaskBackgroundJob,
+  type TaskJobResultPayload,
+  type TaskSnapshot,
   isTerminalJobStatus,
   isReviewBackgroundJob,
 } from "./job-types.js";
@@ -225,12 +228,27 @@ export function readResearchSnapshot(workspaceRoot: string, jobId: string): Rese
   return readJsonFile<ResearchSnapshot>(getJobSnapshotFile(workspaceRoot, jobId));
 }
 
+export function writeTaskSnapshot(workspaceRoot: string, jobId: string, snapshot: TaskSnapshot): string {
+  const filePath = getJobSnapshotFile(workspaceRoot, jobId);
+  writePrivateJson(filePath, snapshot);
+  return filePath;
+}
+
+export function readTaskSnapshot(workspaceRoot: string, jobId: string): TaskSnapshot | null {
+  return readJsonFile<TaskSnapshot>(getJobSnapshotFile(workspaceRoot, jobId));
+}
+
 export function writeReviewJobResult(workspaceRoot: string, jobId: string, result: ReviewJobResultPayload, markdown: string): void {
   writePrivateJson(getJobResultJsonFile(workspaceRoot, jobId), result);
   writePrivateText(getJobResultFile(workspaceRoot, jobId), markdown);
 }
 
 export function writeResearchJobResult(workspaceRoot: string, jobId: string, result: ResearchJobResultPayload, markdown: string): void {
+  writePrivateJson(getJobResultJsonFile(workspaceRoot, jobId), result);
+  writePrivateText(getJobResultFile(workspaceRoot, jobId), markdown);
+}
+
+export function writeTaskJobResult(workspaceRoot: string, jobId: string, result: TaskJobResultPayload, markdown: string): void {
   writePrivateJson(getJobResultJsonFile(workspaceRoot, jobId), result);
   writePrivateText(getJobResultFile(workspaceRoot, jobId), markdown);
 }
@@ -254,6 +272,10 @@ export function readReviewJobResult(workspaceRoot: string, jobId: string): Revie
 
 export function readResearchJobResult(workspaceRoot: string, jobId: string): ResearchJobResultPayload | null {
   return readJsonFile<ResearchJobResultPayload>(getJobResultJsonFile(workspaceRoot, jobId));
+}
+
+export function readTaskJobResult(workspaceRoot: string, jobId: string): TaskJobResultPayload | null {
+  return readJsonFile<TaskJobResultPayload>(getJobResultJsonFile(workspaceRoot, jobId));
 }
 
 export function appendJobLog(workspaceRoot: string, jobId: string, message: string): void {
@@ -281,6 +303,15 @@ export function createReviewBackgroundJob(job: ReviewBackgroundJob, snapshot: Re
 export function createResearchBackgroundJob(job: ResearchBackgroundJob, snapshot: ResearchSnapshot): ResearchBackgroundJob {
   withJobLock(job.workspaceRoot, job.id, () => {
     writeResearchSnapshot(job.workspaceRoot, job.id, snapshot);
+    writePrivateText(job.logFile, "");
+    writeJobArtifacts(job);
+  });
+  return job;
+}
+
+export function createTaskBackgroundJob(job: TaskBackgroundJob, snapshot: TaskSnapshot): TaskBackgroundJob {
+  withJobLock(job.workspaceRoot, job.id, () => {
+    writeTaskSnapshot(job.workspaceRoot, job.id, snapshot);
     writePrivateText(job.logFile, "");
     writeJobArtifacts(job);
   });
