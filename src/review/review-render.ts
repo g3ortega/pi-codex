@@ -1,5 +1,6 @@
 import type { CodexSettings } from "../config/codex-settings.js";
 import type { ResearchToolSnapshot } from "../runtime/session-prompts.js";
+import { summarizeBackgroundDurations, summarizeReviewDuration } from "../runtime/duration.js";
 import type { StoredReviewRun, StructuredReviewResult } from "./review-schema.js";
 
 function formatLineRange(lineStart: number | null, lineEnd: number | null): string {
@@ -31,7 +32,21 @@ function findingsMarkdown(result: StructuredReviewResult): string[] {
   return lines;
 }
 
-export function renderStoredReviewMarkdown(run: StoredReviewRun): string {
+export function renderStoredReviewMarkdown(
+  run: StoredReviewRun,
+  options: {
+    backgroundTiming?: {
+      createdAt?: string;
+      startedAt?: string;
+      completedAt?: string;
+      cancelledAt?: string;
+      updatedAt?: string;
+      status?: string;
+    };
+  } = {},
+): string {
+  const duration = summarizeReviewDuration(run);
+  const backgroundTimings = options.backgroundTiming ? summarizeBackgroundDurations(options.backgroundTiming) : null;
   const header = [
     `# Codex ${run.kind === "adversarial-review" ? "Adversarial Review" : "Review"}`,
     "",
@@ -42,6 +57,20 @@ export function renderStoredReviewMarkdown(run: StoredReviewRun): string {
     `- Model: ${run.modelProvider}/${run.modelId}`,
     `- Created: ${run.createdAt}`,
   ];
+  if (run.completedAt && run.completedAt !== run.createdAt) {
+    header.push(`- Completed: ${run.completedAt}`);
+  }
+  if (backgroundTimings?.queueDelay) {
+    header.push(`- Queue delay: ${backgroundTimings.queueDelay}`);
+  }
+  if (backgroundTimings?.runDuration) {
+    header.push(`- Run duration: ${backgroundTimings.runDuration}`);
+  }
+  if (backgroundTimings?.totalDuration) {
+    header.push(`- Total duration: ${backgroundTimings.totalDuration}`);
+  } else if (duration) {
+    header.push(`- Duration: ${duration}`);
+  }
 
   if (run.focusText) {
     header.push(`- Focus: ${run.focusText}`);

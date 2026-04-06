@@ -1,5 +1,6 @@
 import { backgroundJobSubject, isResearchBackgroundJob, isTaskBackgroundJob } from "./job-types.js";
 import type { CodexBackgroundJob } from "./job-types.js";
+import { backgroundCompletionDurationLabel, summarizeBackgroundDurations } from "./duration.js";
 
 const INLINE_COMPLETION_MAX_CHARS = 2_400;
 const INLINE_COMPLETION_MAX_LINES = 48;
@@ -69,6 +70,8 @@ export function renderBackgroundJobLaunchMarkdown(job: CodexBackgroundJob): stri
 export function renderBackgroundJobMarkdown(job: CodexBackgroundJob): string {
   const title = backgroundJobTitle(job, true);
   const subjectLabel = job.jobClass === "review" ? "Target" : "Request";
+  const timings = summarizeBackgroundDurations(job);
+  const isTerminal = job.status === "completed" || job.status === "failed" || job.status === "cancelled" || job.status === "lost";
   const lines = [
     `# ${title}`,
     "",
@@ -94,6 +97,17 @@ export function renderBackgroundJobMarkdown(job: CodexBackgroundJob): string {
   }
   if (job.lastHeartbeatAt) {
     lines.push(`- Last heartbeat: ${job.lastHeartbeatAt}`);
+  }
+  if (timings.queueDelay) {
+    lines.push(`- Queue delay: ${timings.queueDelay}`);
+  }
+  if (timings.runDuration && isTerminal) {
+    lines.push(`- Run duration: ${timings.runDuration}`);
+  }
+  if (timings.totalDuration && isTerminal) {
+    lines.push(`- Total duration: ${timings.totalDuration}`);
+  } else if (timings.runningFor && (job.status === "running" || job.status === "cancelling")) {
+    lines.push(`- Running for: ${timings.runningFor}`);
   }
   if (job.jobClass === "review" && job.focusText) {
     lines.push(`- Focus: ${job.focusText}`);
@@ -363,6 +377,10 @@ export function renderBackgroundJobCompletionMarkdown(
     `- ${subjectLabel}: ${backgroundJobSubject(job)}`,
     `- Model: ${job.modelSpec}`,
   ];
+  const durationLabel = backgroundCompletionDurationLabel(job);
+  if (durationLabel) {
+    lines.push(`- Timing: ${durationLabel}`);
+  }
 
   if (job.jobClass === "review" && job.resultVerdict) {
     lines.push(`- Verdict: ${job.resultVerdict}`);

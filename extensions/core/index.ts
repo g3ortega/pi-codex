@@ -37,7 +37,7 @@ import { parseTaskCommandOptions } from "../../src/runtime/task-command-options.
 import { findProtectedPathInBashCommand, findProtectedPathMatch } from "../../src/runtime/path-protection.js";
 import { buildInspectionRetryGuidance, buildResearchPrompt, buildTaskPrompt, inspectResearchTools } from "../../src/runtime/session-prompts.js";
 import { executeReviewRun, type ReviewCommandOptions } from "../../src/review/review-runner.js";
-import { findStoredReview, listStoredReviews } from "../../src/runtime/review-store.js";
+import { findStoredReview, listStoredReviews, storedReviewSortKey } from "../../src/runtime/review-store.js";
 import {
   renderConfigMarkdown,
   renderResearchQueuedMarkdown,
@@ -795,7 +795,7 @@ function resolveLatestStoredResult(
   const latestTerminalJob = terminalJobs[0] ?? null;
 
   if (latestTerminalJob && latestReview) {
-    return backgroundResultSortKey(latestTerminalJob).localeCompare(latestReview.createdAt) >= 0
+    return backgroundResultSortKey(latestTerminalJob).localeCompare(storedReviewSortKey(latestReview)) >= 0
       ? { kind: "job", job: latestTerminalJob }
       : { kind: "review", run: latestReview };
   }

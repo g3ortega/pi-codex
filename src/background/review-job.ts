@@ -294,9 +294,16 @@ export async function runDetachedReviewJob(
       return markCancelled(job.workspaceRoot, job.id, "Background review cancelled before persisting a result.");
     }
 
-    const markdown = renderStoredReviewMarkdown(reviewRun);
-    writeReviewJobResult(job.workspaceRoot, job.id, { reviewRun }, markdown);
     const completedAt = nowIso();
+    const markdown = renderStoredReviewMarkdown(reviewRun, {
+      backgroundTiming: {
+        createdAt: current?.createdAt ?? job.createdAt,
+        startedAt: current?.startedAt ?? reviewRun.startedAt,
+        completedAt,
+        status: "completed",
+      },
+    });
+    writeReviewJobResult(job.workspaceRoot, job.id, { reviewRun }, markdown);
     const completed = updateBackgroundJob(job.workspaceRoot, job.id, (current) => {
       if (current.status === "cancelled" || current.status === "cancelling") {
         return {

@@ -8,7 +8,7 @@ import path from "node:path";
 import registerCodexExtension from "../extensions/core/index.ts";
 import { splitLeadingOptionTokens, splitShellLikeArgs } from "../src/runtime/arg-parser.ts";
 import { findProtectedPathInBashCommand, findProtectedPathMatch } from "../src/runtime/path-protection.ts";
-import { findStoredReview, listStoredReviews, storeReviewRun } from "../src/runtime/review-store.ts";
+import { findStoredReview, listStoredReviews, storeReviewRun, storedReviewSortKey } from "../src/runtime/review-store.ts";
 import { parseTaskCommandOptions } from "../src/runtime/task-command-options.ts";
 import {
   createResearchBackgroundJob,
@@ -364,6 +364,42 @@ test("review store resolves latest, exact, prefix, and ambiguous references", ()
     assert.equal(findStoredReview(cwd, "review-ambig-a")?.id, "review-ambig-alpha");
     assert.throws(() => findStoredReview(cwd, "review-ambig-"), /ambiguous/i);
     assert.equal(findStoredReview(cwd, "review-missing"), null);
+  } finally {
+    cleanupWorkspace(cwd);
+  }
+});
+
+test("review store orders overlapping reviews by completed result time when available", () => {
+  const cwd = makeTempDir("pi-codex-review-order-");
+  try {
+    storeReviewRun(
+      cwd,
+      reviewRun({
+        id: "review-started-later-finished-earlier",
+        createdAt: "2026-04-06T10:05:00.000Z",
+        startedAt: "2026-04-06T10:05:00.000Z",
+        completedAt: "2026-04-06T10:05:10.000Z",
+      }),
+      50,
+    );
+    storeReviewRun(
+      cwd,
+      reviewRun({
+        id: "review-started-earlier-finished-later",
+        createdAt: "2026-04-06T10:00:00.000Z",
+        startedAt: "2026-04-06T10:00:00.000Z",
+        completedAt: "2026-04-06T10:06:00.000Z",
+      }),
+      50,
+    );
+
+    const runs = listStoredReviews(cwd);
+    assert.deepEqual(runs.map((run) => run.id), [
+      "review-started-earlier-finished-later",
+      "review-started-later-finished-earlier",
+    ]);
+    assert.equal(findStoredReview(cwd)?.id, "review-started-earlier-finished-later");
+    assert.equal(storedReviewSortKey(runs[0]), "2026-04-06T10:06:00.000Z");
   } finally {
     cleanupWorkspace(cwd);
   }
@@ -844,7 +880,9 @@ test("input fallback routes /codex:result --last to the newest finished result",
         repoDir,
         reviewRun({
           id: "review-latest",
-          createdAt: "2026-04-06T10:06:00.000Z",
+          createdAt: "2026-04-06T09:59:00.000Z",
+          startedAt: "2026-04-06T09:59:00.000Z",
+          completedAt: "2026-04-06T10:06:00.000Z",
           result: {
             verdict: "approve",
             summary: "LATEST_REVIEW_RESULT",
@@ -917,7 +955,7 @@ test("input fallback routes /codex:result --last to the newest finished result",
       assert.deepEqual(result, { action: "handled" });
       assert.ok(
         reports.some((entry) => String(entry.message.content).includes("LATEST_REVIEW_RESULT")),
-        "explicit --last should resolve to the newest finished result, even when a newer background job is still running",
+        "explicit --last should resolve to the newest finished result by completion time, even when a newer background job is still running",
       );
       assert.ok(
         reports.every((entry) => !String(entry.message.content).includes("BACKGROUND_RESULT")),

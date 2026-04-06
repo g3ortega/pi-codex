@@ -1,10 +1,12 @@
 import type { ResearchBackgroundJob, ResearchJobResultPayload } from "../runtime/job-types.js";
+import { summarizeBackgroundDurations } from "../runtime/duration.js";
 
 function bulletList(values: string[]): string[] {
   return values.length > 0 ? values.map((value) => `- ${value}`) : ["- none"];
 }
 
 export function renderStoredResearchMarkdown(job: ResearchBackgroundJob, result: ResearchJobResultPayload): string {
+  const timings = summarizeBackgroundDurations(job);
   const lines = [
     "# Codex Research",
     "",
@@ -20,6 +22,15 @@ export function renderStoredResearchMarkdown(job: ResearchBackgroundJob, result:
   }
   if (job.completedAt) {
     lines.push(`- Completed: ${job.completedAt}`);
+  }
+  if (timings.queueDelay) {
+    lines.push(`- Queue delay: ${timings.queueDelay}`);
+  }
+  if (timings.runDuration) {
+    lines.push(`- Run duration: ${timings.runDuration}`);
+  }
+  if (timings.totalDuration) {
+    lines.push(`- Total duration: ${timings.totalDuration}`);
   }
 
   lines.push(

@@ -347,6 +347,7 @@ export async function executePreparedReviewRun(
   input: PreparedReviewExecutionInput,
   options: { persist?: boolean; signal?: AbortSignal } = {},
 ): Promise<StoredReviewRun> {
+  const startedAt = new Date().toISOString();
   const model = resolveModel(ctx, settings, input.modelSpec);
   const prompt = buildStructuredReviewPrompt(input.kind, input.targetLabel, input.focusText, input.reviewInput);
   const rawOutput = await runModelCompletion(
@@ -359,10 +360,13 @@ export async function executePreparedReviewRun(
   );
 
   const parsed = parseStructuredReviewOutput(rawOutput);
+  const completedAt = new Date().toISOString();
   const run: StoredReviewRun = {
     id: input.id ?? generateReviewId(input.kind === "adversarial-review" ? "adversarial-review" : "review"),
     kind: input.kind,
-    createdAt: new Date().toISOString(),
+    createdAt: completedAt,
+    startedAt,
+    completedAt,
     repoRoot: input.repoRoot,
     branch: input.branch,
     targetLabel: input.targetLabel,

@@ -29,6 +29,8 @@ export interface StoredReviewRun {
   id: string;
   kind: "review" | "adversarial-review";
   createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
   repoRoot: string;
   branch: string;
   targetLabel: string;

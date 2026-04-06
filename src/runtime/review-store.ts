@@ -25,6 +25,10 @@ function reviewFiles(cwd: string): string[] {
     .map((name) => join(reviewDir, name));
 }
 
+export function storedReviewSortKey(run: StoredReviewRun): string {
+  return run.completedAt ?? run.createdAt;
+}
+
 export function listStoredReviews(cwd: string): StoredReviewRun[] {
   return reviewFiles(cwd)
     .map((filePath) => {
@@ -35,7 +39,7 @@ export function listStoredReviews(cwd: string): StoredReviewRun[] {
       }
     })
     .filter((value): value is StoredReviewRun => value !== null)
-    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    .sort((left, right) => storedReviewSortKey(right).localeCompare(storedReviewSortKey(left)));
 }
 
 export function findStoredReview(cwd: string, reference?: string): StoredReviewRun | null {
