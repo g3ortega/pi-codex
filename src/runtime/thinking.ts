@@ -1,3 +1,4 @@
+import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { supportsXhigh, type Model, type SimpleStreamOptions } from "@mariozechner/pi-ai";
 
 export const CODEX_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
@@ -33,4 +34,17 @@ export function reasoningLevelForCompletion(level: CodexThinkingLevel | undefine
     return undefined;
   }
   return level;
+}
+
+export function getCurrentSessionThinkingLevel(
+  pi: Pick<ExtensionAPI, "getThinkingLevel">,
+  ctx?: Pick<ExtensionCommandContext, "sessionManager"> | null,
+): CodexThinkingLevel | undefined {
+  const sessionManager = ctx?.sessionManager as { buildSessionContext?: () => { thinkingLevel?: unknown } } | undefined;
+  const sessionThinking = sessionManager?.buildSessionContext?.().thinkingLevel;
+  if (isCodexThinkingLevel(sessionThinking)) {
+    return sessionThinking;
+  }
+  const apiThinking = pi.getThinkingLevel();
+  return isCodexThinkingLevel(apiThinking) ? apiThinking : undefined;
 }

@@ -45,7 +45,7 @@ import type {
   TaskJobResultPayload,
   TaskSnapshot,
 } from "../runtime/job-types.js";
-import { resolveEffectiveThinkingLevel, type CodexThinkingLevel } from "../runtime/thinking.js";
+import { getCurrentSessionThinkingLevel, resolveEffectiveThinkingLevel, type CodexThinkingLevel } from "../runtime/thinking.js";
 
 const INTERNAL_TASK_JOB_COMMAND = "codex:internal-run-task-job";
 const CURRENT_EXTENSION_PATH = fileURLToPath(new URL("../../extensions/core/index.ts", import.meta.url));
@@ -190,7 +190,7 @@ function buildTaskJob(
   const sessionDir = getJobSessionDir(repoRoot, id);
   const thinkingLevel = resolveEffectiveThinkingLevel(
     model,
-    explicitThinkingLevel ?? (typeof pi.getThinkingLevel === "function" ? pi.getThinkingLevel() : undefined),
+    explicitThinkingLevel ?? getCurrentSessionThinkingLevel(pi, ctx),
   );
   const worktree = profile === "write" ? createTaskWorktree(ctx.cwd, id) : null;
 

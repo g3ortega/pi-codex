@@ -31,7 +31,7 @@ import {
   summarizeResearchRequest,
 } from "../runtime/session-prompts.js";
 import { resolveSessionIdentity } from "../runtime/session-identity.js";
-import { resolveEffectiveThinkingLevel, type CodexThinkingLevel } from "../runtime/thinking.js";
+import { getCurrentSessionThinkingLevel, resolveEffectiveThinkingLevel, type CodexThinkingLevel } from "../runtime/thinking.js";
 
 const INTERNAL_RESEARCH_JOB_COMMAND = "codex:internal-run-research-job";
 const CURRENT_EXTENSION_PATH = fileURLToPath(new URL("../../extensions/core/index.ts", import.meta.url));
@@ -177,7 +177,7 @@ export async function launchBackgroundResearchJob(
   const sessionDir = getJobSessionDir(repoRoot, id);
   const thinkingLevel = resolveEffectiveThinkingLevel(
     model,
-    explicitThinkingLevel ?? (typeof pi.getThinkingLevel === "function" ? pi.getThinkingLevel() : undefined),
+    explicitThinkingLevel ?? getCurrentSessionThinkingLevel(pi, ctx),
   );
 
   const snapshot: ResearchSnapshot = {

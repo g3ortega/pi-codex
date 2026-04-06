@@ -30,6 +30,7 @@ import {
 } from "../src/runtime/state-paths.ts";
 import { applyStoredTaskPatch } from "../src/runtime/patch-apply.ts";
 import { buildInspectionRetryGuidance, buildResearchPrompt, buildTaskPrompt } from "../src/runtime/session-prompts.ts";
+import { getCurrentSessionThinkingLevel } from "../src/runtime/thinking.ts";
 import { captureTaskWorktreeDiff, cleanupTaskWorktree, createTaskWorktree } from "../src/runtime/worktree.ts";
 
 function makeTempDir(prefix) {
@@ -690,6 +691,25 @@ test("registered commands expose useful argument completions and stop suggesting
 
   const resultRootCompletions = resultCommand.getArgumentCompletions("");
   assert.ok(resultRootCompletions.some((item) => item.label === "--last"));
+});
+
+test("current session thinking prefers session context over extension api fallback", () => {
+  const level = getCurrentSessionThinkingLevel(
+    {
+      getThinkingLevel() {
+        return "low";
+      },
+    },
+    {
+      sessionManager: {
+        buildSessionContext() {
+          return { messages: [], thinkingLevel: "xhigh", model: null };
+        },
+      },
+    },
+  );
+
+  assert.equal(level, "xhigh");
 });
 
 test("inline task --thinking temporarily overrides the session effort for the injected turn only", async () => {

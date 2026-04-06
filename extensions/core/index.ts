@@ -38,7 +38,7 @@ import { findProtectedPathInBashCommand, findProtectedPathMatch } from "../../sr
 import { buildInspectionRetryGuidance, buildResearchPrompt, buildTaskPrompt, inspectResearchTools } from "../../src/runtime/session-prompts.js";
 import { executeReviewRun, type ReviewCommandOptions } from "../../src/review/review-runner.js";
 import { findStoredReview, listStoredReviews, storedReviewSortKey } from "../../src/runtime/review-store.js";
-import { CODEX_THINKING_LEVELS, parseCodexThinkingLevel, type CodexThinkingLevel } from "../../src/runtime/thinking.js";
+import { CODEX_THINKING_LEVELS, getCurrentSessionThinkingLevel, parseCodexThinkingLevel, type CodexThinkingLevel } from "../../src/runtime/thinking.js";
 import {
   renderConfigMarkdown,
   renderResearchQueuedMarkdown,
@@ -265,7 +265,7 @@ function prepareInlineThinkingOverride(
     );
   }
 
-  const previousLevel = pi.getThinkingLevel();
+  const previousLevel = getCurrentSessionThinkingLevel(pi, ctx) ?? pi.getThinkingLevel();
   pi.setThinkingLevel(requestedLevel);
   const effectiveLevel = pi.getThinkingLevel();
 
@@ -334,7 +334,7 @@ async function handleReviewCommand(
   const settings = loadCodexSettings(ctx.cwd);
   const options = parseReviewCommandOptions(rawArgs);
   if (!options.thinkingLevel) {
-    options.thinkingLevel = pi.getThinkingLevel();
+    options.thinkingLevel = getCurrentSessionThinkingLevel(pi, ctx);
   }
   if (kind === "review" && options.focusText) {
     throw new Error(
@@ -394,7 +394,7 @@ async function handleTaskCommand(
   }
 
   const deliverAs = ctx.isIdle() ? undefined : "followUp";
-  const previousThinkingLevel = pi.getThinkingLevel();
+  const previousThinkingLevel = getCurrentSessionThinkingLevel(pi, ctx) ?? pi.getThinkingLevel();
   const inlineThinking = prepareInlineThinkingOverride(pi, ctx, options.thinkingLevel, pendingThinkingRestore, agentLifecycle, "task");
   try {
     pi.sendUserMessage(
@@ -456,7 +456,7 @@ async function handleResearchCommand(
 
   const snapshot = inspectResearchTools(pi);
   const deliverAs = ctx.isIdle() ? undefined : "followUp";
-  const previousThinkingLevel = pi.getThinkingLevel();
+  const previousThinkingLevel = getCurrentSessionThinkingLevel(pi, ctx) ?? pi.getThinkingLevel();
   const inlineThinking = prepareInlineThinkingOverride(pi, ctx, options.thinkingLevel, pendingThinkingRestore, agentLifecycle, "research");
   try {
     pi.sendUserMessage(buildResearchPrompt(request, snapshot), deliverAs ? { deliverAs } : undefined);
@@ -760,7 +760,7 @@ async function handleApplyCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext
 async function handleConfigCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
   const settings = loadCodexSettings(ctx.cwd);
   const currentModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null;
-  sendReport(pi, "Codex Config", renderConfigMarkdown(settings, currentModel, pi.getThinkingLevel()), "info");
+  sendReport(pi, "Codex Config", renderConfigMarkdown(settings, currentModel, getCurrentSessionThinkingLevel(pi, ctx) ?? pi.getThinkingLevel()), "info");
 }
 
 type ArgumentCompletionProvider = (argumentPrefix: string) => AutocompleteItem[] | null;
