@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 
 import registerCodexExtension from "../extensions/core/index.ts";
+import { reviewAbortError } from "../src/review/review-runner.ts";
 import { splitLeadingOptionTokens, splitShellLikeArgs } from "../src/runtime/arg-parser.ts";
 import { findProtectedPathInBashCommand, findProtectedPathMatch } from "../src/runtime/path-protection.ts";
 import { findStoredReview, listStoredReviews, storeReviewRun, storedReviewSortKey } from "../src/runtime/review-store.ts";
@@ -652,11 +653,13 @@ test("registered commands expose useful argument completions and stop suggesting
   });
 
   const reviewCommand = commands.get("codex:review");
+  const mentalModelsCommand = commands.get("codex:adversarial_mental_models_review");
   const taskCommand = commands.get("codex:task");
   const researchCommand = commands.get("codex:research");
   const resultCommand = commands.get("codex:result");
 
   assert.equal(typeof reviewCommand?.getArgumentCompletions, "function");
+  assert.equal(typeof mentalModelsCommand?.getArgumentCompletions, "function");
   assert.equal(typeof taskCommand?.getArgumentCompletions, "function");
   assert.equal(typeof researchCommand?.getArgumentCompletions, "function");
   assert.equal(typeof resultCommand?.getArgumentCompletions, "function");
@@ -674,6 +677,10 @@ test("registered commands expose useful argument completions and stop suggesting
 
   const quotedBaseValueCompletions = reviewCommand.getArgumentCompletions('--base "orig');
   assert.ok(quotedBaseValueCompletions.some((item) => item.label === "origin/main"));
+
+  const mentalModelsRootCompletions = mentalModelsCommand.getArgumentCompletions("");
+  assert.ok(mentalModelsRootCompletions.some((item) => item.label === "--background"));
+  assert.ok(mentalModelsRootCompletions.some((item) => item.label === "--thinking xhigh"));
 
   const taskRootCompletions = taskCommand.getArgumentCompletions("");
   assert.ok(taskRootCompletions.some((item) => item.label === "--readonly"));
@@ -710,6 +717,18 @@ test("current session thinking prefers session context over extension api fallba
   );
 
   assert.equal(level, "xhigh");
+});
+
+test("review abort helper preserves explicit abort reasons", () => {
+  const timeoutController = new AbortController();
+  timeoutController.abort(new Error("Background review exceeded 720s without reaching a terminal review result."));
+  assert.match(reviewAbortError(timeoutController.signal).message, /exceeded 720s/i);
+
+  const cancelController = new AbortController();
+  cancelController.abort("Background review cancellation requested.");
+  assert.equal(reviewAbortError(cancelController.signal).message, "Background review cancellation requested.");
+
+  assert.equal(reviewAbortError(undefined).message, "Review cancelled.");
 });
 
 test("inline task --thinking temporarily overrides the session effort for the injected turn only", async () => {

@@ -20,13 +20,25 @@ Be aggressive, but stay grounded in the repository context and tool outputs you 
 Do not invent files, line numbers, exploits, or runtime failures you cannot support.
 </grounding_rules>
 
+<coverage_expectations>
+Review the materially changed files and the adjacent behavior they can break.
+Check auth and trust boundaries, state transitions, retries, rollback or recovery behavior, stale or partial state, ordering assumptions, compatibility boundaries, and missing tests or observability where relevant.
+If a category is irrelevant to this change, skip it silently.
+</coverage_expectations>
+
 <pi_tooling_preference>
 Prefer PI read-only tools (`find`, `ls`, `grep`, `read`) for repository inspection.
 Use `bash` only when the read-only tools cannot answer the question.
 </pi_tooling_preference>
 
 <dig_deeper_nudge>
-Check for second-order failures, empty-state behavior, retries, stale state, rollback risk, and hidden design weaknesses before finalizing.
+After the first supportable issue, keep looking for additional independent no-ship risks before finalizing.
+Check for second-order failures, empty-state behavior, retries, stale state, rollback risk, and hidden design weaknesses.
 </dig_deeper_nudge>
+
+<verification_loop>
+Before finalizing, verify that the highest-risk changed surfaces were inspected and that each issue would still matter in a realistic failure scenario.
+If a concern weakens under closer inspection, drop it instead of padding the list.
+</verification_loop>
 
 For the packaged git-aware workflow with persisted results and structured JSON review, prefer `/codex:adversarial-review`.

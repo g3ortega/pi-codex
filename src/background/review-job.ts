@@ -29,10 +29,12 @@ import {
   type ReviewCommandOptions,
 } from "../review/review-runner.js";
 import { resolveEffectiveThinkingLevel } from "../runtime/thinking.js";
+import { reviewKindIdPrefix, type CodexReviewKind } from "../review/review-kind.js";
 
 const INTERNAL_REVIEW_JOB_COMMAND = "codex:internal-run-review-job";
 const CURRENT_EXTENSION_PATH = fileURLToPath(new URL("../../extensions/core/index.ts", import.meta.url));
 const MAX_REVIEW_JOB_DURATION_MS = 5 * 60 * 1_000;
+const MAX_MENTAL_MODELS_REVIEW_JOB_DURATION_MS = 12 * 60 * 1_000;
 
 type ReviewJobRuntime = {
   executeReview?: typeof executePreparedReviewRun;
@@ -91,7 +93,7 @@ function spawnDetachedReviewWorker(job: ReviewBackgroundJob): number | null {
 export async function launchBackgroundReviewJob(
   ctx: ExtensionCommandContext,
   settings: CodexSettings,
-  kind: "review" | "adversarial-review",
+  kind: CodexReviewKind,
   options: ReviewCommandOptions,
 ): Promise<ReviewBackgroundJob> {
   const sessionIdentity = resolveSessionIdentity(ctx);
@@ -103,7 +105,7 @@ export async function launchBackgroundReviewJob(
   const model = resolveModel(ctx, settings, options.modelSpec);
   await requireModelAuth(ctx, model);
   const thinkingLevel = resolveEffectiveThinkingLevel(model, options.thinkingLevel);
-  const id = generateJobId(kind === "adversarial-review" ? "adversarial-review" : "review");
+  const id = generateJobId(reviewKindIdPrefix(kind));
   const createdAt = nowIso();
 
   const snapshot: ReviewSnapshot = {
@@ -205,7 +207,9 @@ export async function runDetachedReviewJob(
 
   const abortController = new AbortController();
   const executeReview = runtime.executeReview ?? executePreparedReviewRun;
-  const timeoutMs = runtime.timeoutMs ?? MAX_REVIEW_JOB_DURATION_MS;
+  const timeoutMs = runtime.timeoutMs ?? (snapshot.kind === "adversarial-mental-models-review"
+    ? MAX_MENTAL_MODELS_REVIEW_JOB_DURATION_MS
+    : MAX_REVIEW_JOB_DURATION_MS);
   let cancellationRequested = false;
   let timeoutRequested = false;
   let timeoutHandle: NodeJS.Timeout | null = null;

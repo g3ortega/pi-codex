@@ -38,6 +38,7 @@ That gives the package strong write and shell safety defaults without taking ove
 
 - `/codex:review` for structured repository review
 - `/codex:adversarial-review` for harsher, no-ship-oriented review
+- `/codex:adversarial_mental_models_review` for a deeper multi-lens adversarial review
 - `/codex:research` for evidence-first investigation
 - `/codex:task` for inline or background implementation work
 - `/codex:status` for a single job or recent review status
@@ -64,6 +65,7 @@ The repo includes reusable prompt templates under `references/prompts/`:
 
 - `codex-prompt-review`
 - `codex-prompt-adversarial-review`
+- `codex-prompt-adversarial-mental-models-review`
 - `codex-prompt-task`
 - `codex-prompt-research`
 
@@ -77,6 +79,7 @@ The packaged workflow commands intentionally use the colon names:
 
 - `/codex:review`
 - `/codex:adversarial-review`
+- `/codex:adversarial_mental_models_review`
 - `/codex:task`
 - `/codex:research`
 
@@ -150,6 +153,8 @@ Run a structured review of the current repository state:
 
 `/codex:review` stays non-steerable by design. If you want to challenge a specific decision or risk area, use `/codex:adversarial-review`.
 
+Review prompts are tuned to keep looking for a compact set of all supportable material issues in the changed surfaces, not just the first plausible finding. For the deepest pass, prefer `--thinking xhigh`.
+
 Run a harsher blocking review:
 
 ```bash
@@ -158,6 +163,17 @@ Run a harsher blocking review:
 /codex:adversarial-review --scope branch
 /codex:adversarial-review --background --scope branch
 ```
+
+`/codex:adversarial-review` stays the lighter adversarial review mode, but it is now tuned to keep checking adjacent risky surfaces instead of stopping at the first plausible issue.
+
+Run the deepest adversarial review:
+
+```bash
+/codex:adversarial_mental_models_review --thinking xhigh
+/codex:adversarial_mental_models_review --background --scope working-tree
+```
+
+`/codex:adversarial_mental_models_review` runs a deeper adversarial review pipeline: Inverter, Boundary Prober, and Invariant Auditor passes run in parallel, then a final aggregation pass merges corroborated findings, ruled-out concerns, and remaining uncertainties into one stored review result.
 
 Queue a Codex-oriented implementation request into the active PI session:
 
@@ -211,6 +227,7 @@ All major `pi-codex` workflows accept `--thinking off|minimal|low|medium|high|xh
 
 - `/codex:review`
 - `/codex:adversarial-review`
+- `/codex:adversarial_mental_models_review`
 - `/codex:task`
 - `/codex:research`
 

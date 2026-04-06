@@ -1,8 +1,9 @@
 import type { StoredReviewRun, ReviewVerdict } from "../review/review-schema.js";
+import type { CodexReviewKind } from "../review/review-kind.js";
 import type { CodexThinkingLevel } from "./thinking.js";
 
 export type CodexJobClass = "review" | "research" | "task";
-export type CodexReviewJobKind = "review" | "adversarial-review";
+export type CodexReviewJobKind = CodexReviewKind;
 export type CodexResearchJobKind = "research";
 export type CodexTaskJobKind = "task";
 export type CodexTaskExecutionProfile = "readonly" | "write";

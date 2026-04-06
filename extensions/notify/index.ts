@@ -20,6 +20,7 @@ import { sendReport } from "../../src/runtime/report-message.js";
 import { resolveSessionIdentity } from "../../src/runtime/session-identity.js";
 import { getWorkspaceJobsDirForRoot, getWorkspaceRoot } from "../../src/runtime/state-paths.js";
 import { isTerminalJobStatus, type CodexBackgroundJob } from "../../src/runtime/job-types.js";
+import { reviewKindTitle } from "../../src/review/review-kind.js";
 
 const POLL_INTERVAL_MS = 2_000;
 const COALESCE_MS = 75;
@@ -193,7 +194,7 @@ function notifyCompletion(pi: ExtensionAPI, state: NotifyState, job: CodexBackgr
 
   if (state.lastUiContext?.hasUI) {
     const label = job.jobClass === "review"
-      ? `Codex ${job.kind === "adversarial-review" ? "adversarial review" : "review"} ${job.status}`
+      ? `${reviewKindTitle(job.kind)} ${job.status}`
       : job.jobClass === "research"
         ? `Codex research ${job.status}`
         : `Codex task ${job.status}`;

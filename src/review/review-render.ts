@@ -2,6 +2,7 @@ import type { CodexSettings } from "../config/codex-settings.js";
 import type { ResearchToolSnapshot } from "../runtime/session-prompts.js";
 import { summarizeBackgroundDurations, summarizeReviewDuration } from "../runtime/duration.js";
 import type { StoredReviewRun, StructuredReviewResult } from "./review-schema.js";
+import { reviewKindTitle } from "./review-kind.js";
 
 function formatLineRange(lineStart: number | null, lineEnd: number | null): string {
   if (!lineStart) {
@@ -48,7 +49,7 @@ export function renderStoredReviewMarkdown(
   const duration = summarizeReviewDuration(run);
   const backgroundTimings = options.backgroundTiming ? summarizeBackgroundDurations(options.backgroundTiming) : null;
   const header = [
-    `# Codex ${run.kind === "adversarial-review" ? "Adversarial Review" : "Review"}`,
+    `# ${reviewKindTitle(run.kind)}`,
     "",
     `- Review ID: ${run.id}`,
     `- Repository: ${run.repoRoot}`,
@@ -105,9 +106,26 @@ export function renderStoredReviewMarkdown(
     ...findingsMarkdown(run.result),
   ];
 
-  if (run.result.next_steps.length > 0) {
+  const ruledOut = run.result.ruled_out ?? [];
+  if (ruledOut.length > 0) {
+    lines.push("", "Ruled out:");
+    for (const item of ruledOut) {
+      lines.push(`- ${item}`);
+    }
+  }
+
+  const uncertainties = run.result.uncertainties ?? [];
+  if (uncertainties.length > 0) {
+    lines.push("", "Uncertainties:");
+    for (const item of uncertainties) {
+      lines.push(`- ${item}`);
+    }
+  }
+
+  const nextSteps = run.result.next_steps ?? [];
+  if (nextSteps.length > 0) {
     lines.push("", "Next steps:");
-    for (const step of run.result.next_steps) {
+    for (const step of nextSteps) {
       lines.push(`- ${step}`);
     }
   }

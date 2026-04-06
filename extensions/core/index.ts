@@ -39,6 +39,7 @@ import { buildInspectionRetryGuidance, buildResearchPrompt, buildTaskPrompt, ins
 import { executeReviewRun, type ReviewCommandOptions } from "../../src/review/review-runner.js";
 import { findStoredReview, listStoredReviews, storedReviewSortKey } from "../../src/runtime/review-store.js";
 import { CODEX_THINKING_LEVELS, getCurrentSessionThinkingLevel, parseCodexThinkingLevel, type CodexThinkingLevel } from "../../src/runtime/thinking.js";
+import { reviewKindTitle, type CodexReviewKind } from "../../src/review/review-kind.js";
 import {
   renderConfigMarkdown,
   renderResearchQueuedMarkdown,
@@ -328,7 +329,7 @@ function restorePendingThinkingLevel(
 async function handleReviewCommand(
   pi: ExtensionAPI,
   ctx: ExtensionCommandContext,
-  kind: "review" | "adversarial-review",
+  kind: CodexReviewKind,
   rawArgs: string,
 ): Promise<void> {
   const settings = loadCodexSettings(ctx.cwd);
@@ -345,7 +346,7 @@ async function handleReviewCommand(
     const job = await launchBackgroundReviewJob(ctx, settings, kind, options);
     sendReport(
       pi,
-      kind === "adversarial-review" ? "Codex Adversarial Review Job" : "Codex Review Job",
+      `${reviewKindTitle(kind)} Job`,
       renderBackgroundJobLaunchMarkdown(job),
       "info",
     );
@@ -354,7 +355,7 @@ async function handleReviewCommand(
   const run = await executeReviewRun(ctx, settings, kind, options);
   sendReport(
     pi,
-    kind === "adversarial-review" ? "Codex Adversarial Review" : "Codex Review",
+    reviewKindTitle(kind),
     renderStoredReviewMarkdown(run),
     run.result?.verdict === "needs-attention" || !run.result ? "warning" : "success",
   );
@@ -548,6 +549,9 @@ async function dispatchCodexCommandByName(
       return true;
     case "codex:adversarial-review":
       await handleReviewCommand(pi, ctx, "adversarial-review", args);
+      return true;
+    case "codex:adversarial_mental_models_review":
+      await handleReviewCommand(pi, ctx, "adversarial-mental-models-review", args);
       return true;
     case "codex:task":
       await runTaskCommandWithWaiter(pi, ctx, args, pendingInjectedTurnWaiters, pendingThinkingRestore, agentLifecycle);
@@ -1219,6 +1223,15 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
     "Run an adversarial Codex review [--background] [--scope working-tree|branch] [--base <ref>] [--model <provider/model>] [--thinking <level>]",
     async (args, ctx) => {
       await handleReviewCommand(pi, ctx, "adversarial-review", args);
+    },
+    reviewArgumentCompletions,
+  );
+  registerSingleCommand(
+    pi,
+    "codex:adversarial_mental_models_review",
+    "Run an adversarial mental-models Codex review [--background] [--scope working-tree|branch] [--base <ref>] [--model <provider/model>] [--thinking <level>]",
+    async (args, ctx) => {
+      await handleReviewCommand(pi, ctx, "adversarial-mental-models-review", args);
     },
     reviewArgumentCompletions,
   );

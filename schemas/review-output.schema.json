@@ -6,6 +6,8 @@
     "verdict",
     "summary",
     "findings",
+    "ruled_out",
+    "uncertainties",
     "next_steps"
   ],
   "properties": {
@@ -74,6 +76,20 @@
             "type": "string"
           }
         }
+      }
+    },
+    "ruled_out": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "uncertainties": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
       }
     },
     "next_steps": {

@@ -1,3 +1,5 @@
+import type { CodexReviewKind } from "./review-kind.js";
+
 export type ReviewSeverity = "critical" | "high" | "medium" | "low";
 export type ReviewVerdict = "approve" | "needs-attention";
 
@@ -16,6 +18,8 @@ export interface StructuredReviewResult {
   verdict: ReviewVerdict;
   summary: string;
   findings: ReviewFinding[];
+  ruled_out: string[];
+  uncertainties: string[];
   next_steps: string[];
 }
 
@@ -27,7 +31,7 @@ export interface ParsedReviewPayload {
 
 export interface StoredReviewRun {
   id: string;
-  kind: "review" | "adversarial-review";
+  kind: CodexReviewKind;
   createdAt: string;
   startedAt?: string;
   completedAt?: string;
@@ -154,6 +158,14 @@ export function validateStructuredReviewShape(data: unknown): StructuredReviewRe
     verdict: source.verdict,
     summary: source.summary.trim(),
     findings: source.findings.map((entry, index) => normalizeFinding(entry, index)),
+    ruled_out: Array.isArray(source.ruled_out)
+      ? source.ruled_out.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0).map((entry) => entry.trim())
+      : [],
+    uncertainties: Array.isArray(source.uncertainties)
+      ? source.uncertainties
+        .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+        .map((entry) => entry.trim())
+      : [],
     next_steps: source.next_steps
       .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
       .map((entry) => entry.trim()),

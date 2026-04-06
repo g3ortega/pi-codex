@@ -1,12 +1,17 @@
 import { backgroundJobSubject, isResearchBackgroundJob, isTaskBackgroundJob } from "./job-types.js";
 import type { CodexBackgroundJob } from "./job-types.js";
 import { backgroundCompletionDurationLabel, summarizeBackgroundDurations } from "./duration.js";
+import { reviewKindTitle } from "../review/review-kind.js";
 
 const INLINE_COMPLETION_MAX_CHARS = 2_400;
 const INLINE_COMPLETION_MAX_LINES = 48;
 
 function formatWhen(value: string | undefined): string {
   return value ?? "n/a";
+}
+
+function reviewResultFollowUp(job: Extract<CodexBackgroundJob, { jobClass: "review" }>): string {
+  return `Use \`/codex:status\` to track progress, \`/codex:result --last\` for the newest review result, \`/codex:result <job-id>\` for this exact review, or \`/codex:cancel <job-id>\` to stop it.`;
 }
 
 export function renderBackgroundJobLaunchMarkdown(job: CodexBackgroundJob): string {
@@ -16,7 +21,9 @@ export function renderBackgroundJobLaunchMarkdown(job: CodexBackgroundJob): stri
     `# ${title}`,
     "",
     job.jobClass === "review"
-      ? "Background review launched."
+      ? job.kind === "adversarial-mental-models-review"
+        ? "Background adversarial mental-models review launched."
+        : "Background review launched."
       : job.jobClass === "research"
         ? "Background research launched."
         : job.profile === "write"
@@ -33,7 +40,7 @@ export function renderBackgroundJobLaunchMarkdown(job: CodexBackgroundJob): stri
     `- Created: ${job.createdAt}`,
     "",
     job.jobClass === "review"
-      ? "Use `/codex:status` to track progress, `/codex:result --last` for the newest review result, `/codex:result <job-id>` for this exact review, or `/codex:cancel <job-id>` to stop it."
+      ? reviewResultFollowUp(job)
       : job.jobClass === "research"
         ? "Use `/codex:status` to track progress, `/codex:result --last` for the newest research result, `/codex:result <job-id>` for this exact research result, or `/codex:cancel <job-id>` to stop it."
         : job.profile === "write"
@@ -154,7 +161,9 @@ export function renderBackgroundJobMarkdown(job: CodexBackgroundJob): string {
     case "running":
       lines.push(
         job.jobClass === "review"
-          ? "The background review is still in progress."
+          ? job.kind === "adversarial-mental-models-review"
+            ? "The background adversarial mental-models review is still in progress."
+            : "The background review is still in progress."
           : job.jobClass === "research"
             ? "The background research job is still in progress."
             : job.profile === "write"
@@ -165,7 +174,9 @@ export function renderBackgroundJobMarkdown(job: CodexBackgroundJob): string {
     case "cancelling":
       lines.push(
         job.jobClass === "review"
-          ? "Cancellation was requested. Waiting for the background review runner to stop."
+          ? job.kind === "adversarial-mental-models-review"
+            ? "Cancellation was requested. Waiting for the background adversarial mental-models review runner to stop."
+            : "Cancellation was requested. Waiting for the background review runner to stop."
           : job.jobClass === "research"
             ? "Cancellation was requested. Waiting for the background research runner to stop."
             : job.profile === "write"
@@ -176,7 +187,9 @@ export function renderBackgroundJobMarkdown(job: CodexBackgroundJob): string {
     case "cancelled":
       lines.push(
         job.jobClass === "review"
-          ? "The background review was cancelled before completion."
+          ? job.kind === "adversarial-mental-models-review"
+            ? "The background adversarial mental-models review was cancelled before completion."
+            : "The background review was cancelled before completion."
           : job.jobClass === "research"
             ? "The background research job was cancelled before completion."
             : job.profile === "write"
@@ -187,7 +200,9 @@ export function renderBackgroundJobMarkdown(job: CodexBackgroundJob): string {
     case "lost":
       lines.push(
         job.jobClass === "review"
-          ? "The background review runner disappeared before it reported a terminal result."
+          ? job.kind === "adversarial-mental-models-review"
+            ? "The background adversarial mental-models review runner disappeared before it reported a terminal result."
+            : "The background review runner disappeared before it reported a terminal result."
           : job.jobClass === "research"
             ? "The background research runner disappeared before it reported a terminal result."
             : job.profile === "write"
@@ -198,7 +213,9 @@ export function renderBackgroundJobMarkdown(job: CodexBackgroundJob): string {
     case "failed":
       lines.push(
         job.jobClass === "review"
-          ? "The background review failed before producing a result."
+          ? job.kind === "adversarial-mental-models-review"
+            ? "The background adversarial mental-models review failed before producing a result."
+            : "The background review failed before producing a result."
           : job.jobClass === "research"
             ? "The background research job failed before producing a result."
             : job.profile === "write"
@@ -209,7 +226,9 @@ export function renderBackgroundJobMarkdown(job: CodexBackgroundJob): string {
     case "completed":
       lines.push(
         job.jobClass === "review"
-          ? "The background review completed. Use `/codex:result --last` for the newest review result or `/codex:result " + job.id + "` to inspect this stored review."
+          ? job.kind === "adversarial-mental-models-review"
+            ? "The background adversarial mental-models review completed. Use `/codex:result --last` for the newest review result or `/codex:result " + job.id + "` to inspect this stored review."
+            : "The background review completed. Use `/codex:result --last` for the newest review result or `/codex:result " + job.id + "` to inspect this stored review."
           : job.jobClass === "research"
             ? "The background research completed. Use `/codex:result --last` for the newest research result or `/codex:result " + job.id + "` to inspect this stored result."
             : job.profile === "write"
@@ -318,7 +337,7 @@ function completionNextStepLine(job: CodexBackgroundJob): string {
 
 export function backgroundJobTitle(job: CodexBackgroundJob, includeJobSuffix = false): string {
   const base = job.jobClass === "review"
-    ? (job.kind === "adversarial-review" ? "Codex Adversarial Review" : "Codex Review")
+    ? reviewKindTitle(job.kind)
     : job.jobClass === "research"
       ? "Codex Research"
       : "Codex Task";
