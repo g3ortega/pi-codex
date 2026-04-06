@@ -18,6 +18,7 @@ import {
   getWorkspaceStateDir,
   getWorkspaceStateDirForRoot,
 } from "../src/runtime/state-paths.ts";
+import { applyStoredTaskPatch } from "../src/runtime/patch-apply.ts";
 import { buildInspectionRetryGuidance, buildResearchPrompt, buildTaskPrompt } from "../src/runtime/session-prompts.ts";
 import { captureTaskWorktreeDiff, cleanupTaskWorktree, createTaskWorktree } from "../src/runtime/worktree.ts";
 
@@ -49,6 +50,18 @@ function createGitRepo(prefix) {
   git(repoDir, ["add", ".gitignore", "tracked.txt"]);
   git(repoDir, ["commit", "-m", "initial"]);
   return repoDir;
+}
+
+function buildCompletedWriteTaskJob(repoDir, overrides = {}) {
+  return {
+    jobClass: "task",
+    profile: "write",
+    status: "completed",
+    repoRoot: fs.realpathSync(repoDir),
+    patchFile: undefined,
+    worktreeBaseCommit: git(repoDir, ["rev-parse", "HEAD"]).trim(),
+    ...overrides,
+  };
 }
 
 function reviewRun(overrides = {}) {
@@ -392,6 +405,105 @@ test("task worktree helper fails closed on dirty repositories", () => {
   try {
     assert.throws(() => createTaskWorktree(repoDir, `dirty-write-${Date.now().toString(36)}`), /clean git working tree/i);
   } finally {
+    fs.rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test("stored background write-task patches can be applied back to a clean live repository", () => {
+  const repoDir = createGitRepo("pi-codex-apply-patch-");
+  const setup = createTaskWorktree(repoDir, `apply-${Date.now().toString(36)}`);
+  const patchDir = makeTempDir("pi-codex-apply-artifacts-");
+
+  try {
+    fs.writeFileSync(path.join(setup.worktreePath, "tracked.txt"), "changed\n", "utf8");
+    const patchFile = path.join(patchDir, "task.patch");
+    const diff = captureTaskWorktreeDiff(setup, patchFile);
+    cleanupTaskWorktree(setup);
+
+    const result = applyStoredTaskPatch(
+      repoDir,
+      buildCompletedWriteTaskJob(repoDir, {
+        patchFile,
+        worktreeBaseCommit: setup.baseCommit,
+      }),
+    );
+
+    assert.equal(result.patchFile, patchFile);
+    assert.match(result.diffStat, /tracked\.txt/);
+    assert.equal(fs.readFileSync(path.join(repoDir, "tracked.txt"), "utf8"), "changed\n");
+    assert.match(diff.diffStat, /tracked\.txt/);
+  } finally {
+    try {
+      cleanupTaskWorktree(setup);
+    } catch {}
+    fs.rmSync(patchDir, { recursive: true, force: true });
+    fs.rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test("stored background write-task patches refuse to apply onto a dirty live repository", () => {
+  const repoDir = createGitRepo("pi-codex-apply-dirty-");
+  const setup = createTaskWorktree(repoDir, `apply-dirty-${Date.now().toString(36)}`);
+  const patchDir = makeTempDir("pi-codex-apply-artifacts-");
+
+  try {
+    fs.writeFileSync(path.join(setup.worktreePath, "tracked.txt"), "changed\n", "utf8");
+    const patchFile = path.join(patchDir, "task.patch");
+    captureTaskWorktreeDiff(setup, patchFile);
+    cleanupTaskWorktree(setup);
+    fs.writeFileSync(path.join(repoDir, "tracked.txt"), "dirty\n", "utf8");
+
+    assert.throws(
+      () =>
+        applyStoredTaskPatch(
+          repoDir,
+          buildCompletedWriteTaskJob(repoDir, {
+            patchFile,
+            worktreeBaseCommit: setup.baseCommit,
+          }),
+        ),
+      /clean git working tree/i,
+    );
+  } finally {
+    try {
+      cleanupTaskWorktree(setup);
+    } catch {}
+    fs.rmSync(patchDir, { recursive: true, force: true });
+    fs.rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test("stored background write-task patches refuse to apply after the live repo head changes", () => {
+  const repoDir = createGitRepo("pi-codex-apply-head-");
+  const setup = createTaskWorktree(repoDir, `apply-head-${Date.now().toString(36)}`);
+  const patchDir = makeTempDir("pi-codex-apply-artifacts-");
+
+  try {
+    fs.writeFileSync(path.join(setup.worktreePath, "tracked.txt"), "changed\n", "utf8");
+    const patchFile = path.join(patchDir, "task.patch");
+    captureTaskWorktreeDiff(setup, patchFile);
+    cleanupTaskWorktree(setup);
+
+    fs.writeFileSync(path.join(repoDir, "other.txt"), "later\n", "utf8");
+    git(repoDir, ["add", "other.txt"]);
+    git(repoDir, ["commit", "-m", "advance"]);
+
+    assert.throws(
+      () =>
+        applyStoredTaskPatch(
+          repoDir,
+          buildCompletedWriteTaskJob(repoDir, {
+            patchFile,
+            worktreeBaseCommit: setup.baseCommit,
+          }),
+        ),
+      /no longer matches the job base commit/i,
+    );
+  } finally {
+    try {
+      cleanupTaskWorktree(setup);
+    } catch {}
+    fs.rmSync(patchDir, { recursive: true, force: true });
     fs.rmSync(repoDir, { recursive: true, force: true });
   }
 });

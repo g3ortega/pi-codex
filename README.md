@@ -41,14 +41,18 @@ That gives the package strong write and shell safety defaults without taking ove
 - `/codex:research`
 - `/codex:task`
 - `/codex:status`
+- `/codex:jobs`
 - `/codex:result`
+- `/codex:apply`
 - `/codex:cancel`
 - `/codex:config`
 
 Alias commands are also registered:
 
 - `/codex-status`
+- `/codex-jobs`
 - `/codex-result`
+- `/codex-apply`
 - `/codex-cancel`
 - `/codex-config`
 
@@ -160,6 +164,7 @@ Current task boundary:
 - `--write` is explicit but matches the current default inline behavior
 - `/codex:task --background --readonly ...` runs in a detached readonly worker and notifies the originating PI session on completion
 - `/codex:task --background --write ...` runs in a detached write-capable worker inside an isolated git worktree and returns a stored patch artifact
+- apply a completed write-task patch back to the live repo with `/codex:apply <job-id>`
 - background `task-write` currently uses `read`, `grep`, `find`, `ls`, `edit`, and `write`, plus any already-active web tools. `bash` is intentionally not exposed in this worker profile yet.
 
 Queue a Codex-oriented research request into the active PI session:
@@ -182,8 +187,10 @@ Inspect stored review history for the current workspace:
 
 ```bash
 /codex:status
+/codex:jobs
 /codex:result
 /codex:result review-m123abc
+/codex:apply task-m123abc
 /codex:cancel review-m123abc
 ```
 

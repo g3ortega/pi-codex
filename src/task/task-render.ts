@@ -49,6 +49,7 @@ export function renderStoredTaskMarkdown(job: TaskBackgroundJob, result: TaskJob
     if ((result.diffStat ?? job.diffStat)?.trim()) {
       lines.push("", "Diff stat:", "", result.diffStat ?? job.diffStat ?? "");
     }
+    lines.push("", `Apply this stored patch to the live repository with \`/codex:apply ${job.id}\`.`);
   }
 
   lines.push("", "Final answer:", "", result.finalText.trim());

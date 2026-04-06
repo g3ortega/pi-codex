@@ -23,6 +23,7 @@ import {
   listBackgroundJobs,
   readBackgroundJobResultMarkdown,
 } from "../../src/runtime/job-store.js";
+import { applyStoredTaskPatch } from "../../src/runtime/patch-apply.js";
 import {
   backgroundJobReportVariant,
   renderBackgroundJobLaunchMarkdown,
@@ -359,7 +360,7 @@ async function handleStatusCommand(pi: ExtensionAPI, ctx: ExtensionCommandContex
 
   const jobs = listBackgroundJobs(ctx.cwd);
   if (jobs.length > 0) {
-    sendReport(pi, "Codex Status", renderBackgroundJobsOverviewMarkdown(jobs), "info");
+    sendReport(pi, "Codex Status", renderBackgroundJobsOverviewMarkdown(jobs, "Codex Status"), "info");
     return;
   }
 
@@ -423,6 +424,57 @@ async function handleCancelCommand(pi: ExtensionAPI, ctx: ExtensionCommandContex
   }
 
   sendReport(pi, "Codex Cancel", renderBackgroundJobMarkdown(cancelled), "warning");
+}
+
+async function handleJobsCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
+  const jobs = listBackgroundJobs(ctx.cwd);
+  sendReport(pi, "Codex Jobs", renderBackgroundJobsOverviewMarkdown(jobs, "Codex Jobs"), "info");
+}
+
+async function handleApplyCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext, rawArgs: string): Promise<void> {
+  const reference = rawArgs.trim();
+  if (!reference) {
+    sendReport(pi, "Codex Apply", "# Codex Apply\n\nProvide a background write-task job id, for example `/codex:apply task-m123abc`.\n", "warning");
+    return;
+  }
+
+  let job = null;
+  try {
+    job = findBackgroundJob(ctx.cwd, reference);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendReport(pi, "Codex Apply", `# Codex Apply\n\n${message}\n`, "warning");
+    return;
+  }
+
+  if (!job) {
+    sendReport(pi, "Codex Apply", `# Codex Apply\n\nNo background Codex job matches \`${reference}\` for this workspace.\n`, "warning");
+    return;
+  }
+  if (job.jobClass !== "task" || job.profile !== "write") {
+    sendReport(pi, "Codex Apply", "# Codex Apply\n\nOnly completed background `task-write` jobs can be applied back to the live repository.\n", "warning");
+    return;
+  }
+
+  try {
+    const applied = applyStoredTaskPatch(ctx.cwd, job);
+    const lines = [
+      "# Codex Apply",
+      "",
+      "Applied the stored background write-task patch to the live repository.",
+      "",
+      `- Job ID: ${job.id}`,
+      `- Repository: ${applied.repoRoot}`,
+      `- Patch file: ${applied.patchFile}`,
+    ];
+    if (applied.diffStat.trim()) {
+      lines.push("", "Diff stat:", "", applied.diffStat);
+    }
+    sendReport(pi, "Codex Apply", `${lines.join("\n").trimEnd()}\n`, "success");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendReport(pi, "Codex Apply", `# Codex Apply\n\n${message}\n`, "warning");
+  }
 }
 
 async function handleConfigCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
@@ -679,6 +731,12 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
   });
   registerCommandPair(pi, "codex:cancel", "codex-cancel", "Cancel an active background Codex job for the current workspace", async (args, ctx) => {
     await handleCancelCommand(pi, ctx, args);
+  });
+  registerCommandPair(pi, "codex:jobs", "codex-jobs", "List background Codex jobs for the current workspace", async (_args, ctx) => {
+    await handleJobsCommand(pi, ctx);
+  });
+  registerCommandPair(pi, "codex:apply", "codex-apply", "Apply a stored background task-write patch to the live repository", async (args, ctx) => {
+    await handleApplyCommand(pi, ctx, args);
   });
   registerCommandPair(pi, "codex:config", "codex-config", "Show the merged Codex configuration for this PI session", async (_args, ctx) => {
     await handleConfigCommand(pi, ctx);
