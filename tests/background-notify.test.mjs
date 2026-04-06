@@ -113,6 +113,7 @@ function buildResearchJob(workspaceRoot, overrides = {}) {
     inactiveAvailableWebTools: [],
     extensionPaths: [],
     sessionDir: getJobSessionDir(workspaceRoot, id),
+    executionCwd: workspaceRoot,
     snapshotFile: getJobSnapshotFile(workspaceRoot, id),
     resultFile: getJobResultFile(workspaceRoot, id),
     resultJsonFile: getJobResultJsonFile(workspaceRoot, id),

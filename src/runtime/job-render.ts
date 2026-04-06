@@ -11,7 +11,13 @@ export function renderBackgroundJobLaunchMarkdown(job: CodexBackgroundJob): stri
   const lines = [
     `# ${title}`,
     "",
-    job.jobClass === "review" ? "Background review launched." : job.jobClass === "research" ? "Background research launched." : "Background readonly task launched.",
+    job.jobClass === "review"
+      ? "Background review launched."
+      : job.jobClass === "research"
+        ? "Background research launched."
+        : job.profile === "write"
+          ? "Background write task launched in an isolated worktree."
+          : "Background readonly task launched.",
     "",
     `- Job ID: ${job.id}`,
     `- Status: ${job.status}`,
@@ -38,8 +44,17 @@ export function renderBackgroundJobLaunchMarkdown(job: CodexBackgroundJob): stri
     lines.push(
       "",
       "Tool surface:",
-      `- Safe built-in tools: ${job.safeBuiltinTools.length > 0 ? job.safeBuiltinTools.join(", ") : "none"}`,
+      `- Worker built-in tools: ${job.safeBuiltinTools.length > 0 ? job.safeBuiltinTools.join(", ") : "none"}`,
       `- Active web tools: ${job.activeWebTools.length > 0 ? job.activeWebTools.join(", ") : "none"}`,
+    );
+  }
+  if (isTaskBackgroundJob(job) && job.profile === "write") {
+    lines.push(
+      "",
+      "Isolation:",
+      `- Execution cwd: ${job.executionCwd}`,
+      `- Worktree path: ${job.worktreePath ?? "n/a"}`,
+      `- Worktree branch: ${job.worktreeBranch ?? "n/a"}`,
     );
   }
 
@@ -85,11 +100,25 @@ export function renderBackgroundJobMarkdown(job: CodexBackgroundJob): string {
     lines.push(`- Mode: ${job.profile}`);
   }
   if (isResearchBackgroundJob(job) || isTaskBackgroundJob(job)) {
-    lines.push(`- Safe built-in tools: ${job.safeBuiltinTools.length > 0 ? job.safeBuiltinTools.join(", ") : "none"}`);
+    lines.push(`- Worker built-in tools: ${job.safeBuiltinTools.length > 0 ? job.safeBuiltinTools.join(", ") : "none"}`);
     lines.push(`- Active web tools: ${job.activeWebTools.length > 0 ? job.activeWebTools.join(", ") : "none"}`);
     lines.push(`- Activated tools: ${job.activeToolNames.length > 0 ? job.activeToolNames.join(", ") : "pending"}`);
     if (job.missingToolNames && job.missingToolNames.length > 0) {
       lines.push(`- Missing requested tools: ${job.missingToolNames.join(", ")}`);
+    }
+  }
+  if (isTaskBackgroundJob(job) && job.profile === "write") {
+    lines.push(`- Execution cwd: ${job.executionCwd}`);
+    lines.push(`- Worktree path: ${job.worktreePath ?? "n/a"}`);
+    lines.push(`- Worktree branch: ${job.worktreeBranch ?? "n/a"}`);
+    if (job.patchFile) {
+      lines.push(`- Patch file: ${job.patchFile}`);
+      lines.push(`- Files changed: ${String(job.filesChanged ?? 0)}`);
+      lines.push(`- Insertions: ${String(job.insertions ?? 0)}`);
+      lines.push(`- Deletions: ${String(job.deletions ?? 0)}`);
+      if (job.diffStat?.trim()) {
+        lines.push("", "Diff stat:", "", job.diffStat);
+      }
     }
   }
   if (job.errorMessage) {
@@ -107,7 +136,9 @@ export function renderBackgroundJobMarkdown(job: CodexBackgroundJob): string {
           ? "The background review is still in progress."
           : job.jobClass === "research"
             ? "The background research job is still in progress."
-            : "The background readonly task is still in progress.",
+            : job.profile === "write"
+              ? "The background write task is still in progress inside its isolated worktree."
+              : "The background readonly task is still in progress.",
       );
       break;
     case "cancelling":
@@ -116,7 +147,9 @@ export function renderBackgroundJobMarkdown(job: CodexBackgroundJob): string {
           ? "Cancellation was requested. Waiting for the background review runner to stop."
           : job.jobClass === "research"
             ? "Cancellation was requested. Waiting for the background research runner to stop."
-            : "Cancellation was requested. Waiting for the background task runner to stop.",
+            : job.profile === "write"
+              ? "Cancellation was requested. Waiting for the isolated background write worker to stop."
+              : "Cancellation was requested. Waiting for the background task runner to stop.",
       );
       break;
     case "cancelled":
@@ -125,7 +158,9 @@ export function renderBackgroundJobMarkdown(job: CodexBackgroundJob): string {
           ? "The background review was cancelled before completion."
           : job.jobClass === "research"
             ? "The background research job was cancelled before completion."
-            : "The background readonly task was cancelled before completion.",
+            : job.profile === "write"
+              ? "The background write task was cancelled before completion."
+              : "The background readonly task was cancelled before completion.",
       );
       break;
     case "lost":
@@ -134,7 +169,9 @@ export function renderBackgroundJobMarkdown(job: CodexBackgroundJob): string {
           ? "The background review runner disappeared before it reported a terminal result."
           : job.jobClass === "research"
             ? "The background research runner disappeared before it reported a terminal result."
-            : "The background task runner disappeared before it reported a terminal result.",
+            : job.profile === "write"
+              ? "The background write worker disappeared before it reported a terminal result."
+              : "The background task runner disappeared before it reported a terminal result.",
       );
       break;
     case "failed":
@@ -143,7 +180,9 @@ export function renderBackgroundJobMarkdown(job: CodexBackgroundJob): string {
           ? "The background review failed before producing a result."
           : job.jobClass === "research"
             ? "The background research job failed before producing a result."
-            : "The background readonly task failed before producing a result.",
+            : job.profile === "write"
+              ? "The background write task failed before producing a result."
+              : "The background readonly task failed before producing a result.",
       );
       break;
     case "completed":
@@ -152,7 +191,9 @@ export function renderBackgroundJobMarkdown(job: CodexBackgroundJob): string {
           ? "The background review completed. Use `/codex:result " + job.id + "` to inspect the stored review."
           : job.jobClass === "research"
             ? "The background research completed. Use `/codex:result " + job.id + "` to inspect the stored result."
-            : "The background readonly task completed. Use `/codex:result " + job.id + "` to inspect the stored result.",
+            : job.profile === "write"
+              ? "The background write task completed in an isolated worktree. Use `/codex:result " + job.id + "` to inspect the stored result and patch artifact."
+              : "The background readonly task completed. Use `/codex:result " + job.id + "` to inspect the stored result.",
       );
       break;
   }

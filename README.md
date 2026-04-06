@@ -148,6 +148,7 @@ Queue a Codex-oriented implementation request into the active PI session:
 /codex:task investigate why auth refresh sometimes fails
 /codex:task --readonly diagnose the failing auth refresh flow and propose a patch
 /codex:task --background --readonly diagnose the failing auth refresh flow and propose a patch
+/codex:task --background --write implement the auth refresh retry fix
 ```
 
 `/codex:task` now treats `--readonly`, `--write`, `--background`, and `--model` as host-side execution flags instead of forwarding them into the natural-language task text.
@@ -158,7 +159,8 @@ Current task boundary:
 - `--readonly` keeps the task read-only and asks for diagnosis or a proposed patch instead of edits
 - `--write` is explicit but matches the current default inline behavior
 - `/codex:task --background --readonly ...` runs in a detached readonly worker and notifies the originating PI session on completion
-- background write-capable task workers are not implemented yet, so `/codex:task --background ...` and `/codex:task --background --write ...` return guidance instead of silently leaking flags into the task prompt
+- `/codex:task --background --write ...` runs in a detached write-capable worker inside an isolated git worktree and returns a stored patch artifact
+- background `task-write` currently uses `read`, `grep`, `find`, `ls`, `edit`, and `write`, plus any already-active web tools. `bash` is intentionally not exposed in this worker profile yet.
 
 Queue a Codex-oriented research request into the active PI session:
 

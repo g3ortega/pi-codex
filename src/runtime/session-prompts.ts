@@ -4,6 +4,7 @@ const KNOWN_WEB_RESEARCH_TOOLS = new Set(["web_search", "code_search", "fetch_co
 const LOCAL_EVIDENCE_TOOLS = new Set(["read", "grep", "find", "bash", "ls"]);
 const MUTATION_TOOLS = new Set(["edit", "write"]);
 const SAFE_BACKGROUND_BUILTINS = ["read", "grep", "find", "ls"] as const;
+const WRITE_BACKGROUND_BUILTINS = ["read", "grep", "find", "ls", "edit", "write"] as const;
 const RESEARCH_TOOL_NAME_PATTERN = /(?:^web_|search|fetch|browse|crawl|scrape|url|pdf|github|video)/i;
 
 export interface ResearchToolSnapshot {
@@ -21,6 +22,7 @@ export interface BackgroundResearchToolPlan {
 }
 
 export type BackgroundReadOnlyToolPlan = BackgroundResearchToolPlan;
+export type BackgroundWriteToolPlan = BackgroundResearchToolPlan;
 
 type ToolLike = {
   name: string;
@@ -153,6 +155,27 @@ export function buildBackgroundReadOnlyToolPlan(pi: ExtensionAPI): BackgroundRea
   };
 }
 
+export function buildBackgroundWriteToolPlan(pi: ExtensionAPI): BackgroundWriteToolPlan {
+  const activeToolNames = new Set(pi.getActiveTools());
+  const allTools = pi.getAllTools();
+  const activeTools = allTools.filter((tool) => activeToolNames.has(tool.name));
+  const activeWebTools = activeTools.filter((tool) => isWebResearchTool(tool));
+
+  return {
+    interactiveSnapshot: inspectResearchTools(pi),
+    safeBuiltinTools: [...WRITE_BACKGROUND_BUILTINS],
+    requestedToolNames: uniqueSorted([
+      ...WRITE_BACKGROUND_BUILTINS,
+      ...activeWebTools.map((tool) => tool.name),
+    ]),
+    extensionPaths: uniqueSorted(
+      activeWebTools
+        .filter((tool) => isExtensionBackedTool(tool) && tool.sourceInfo?.path)
+        .map((tool) => tool.sourceInfo?.path ?? ""),
+    ),
+  };
+}
+
 export function summarizeResearchRequest(request: string, maxLength = 96): string {
   const normalized = request.replace(/\s+/g, " ").trim();
   if (normalized.length <= maxLength) {
@@ -181,10 +204,11 @@ export function inspectResearchToolsFromNames(pi: ExtensionAPI, activeToolNames:
 export function buildTaskPrompt(
   request: string,
   activeToolNames: string[] = ["find", "ls", "grep", "read", "bash"],
-  options: { readOnly?: boolean; activeWebTools?: string[] } = {},
+  options: { readOnly?: boolean; activeWebTools?: string[]; backgroundWrite?: boolean } = {},
 ): string {
   const readOnly = options.readOnly === true;
   const activeWebTools = uniqueSorted(options.activeWebTools ?? []);
+  const backgroundWrite = options.backgroundWrite === true;
 
   return [
     "<task>",
@@ -203,7 +227,9 @@ export function buildTaskPrompt(
     "Prefer doing the work over only describing the work.",
     readOnly
       ? "Stay read-only in this turn. If the user asked for implementation, inspect, diagnose, and propose a concrete patch or next step instead of editing files."
-      : "If the request implies implementation, complete the implementation instead of stopping at diagnosis, planning, or commentary.",
+      : backgroundWrite
+        ? "This is a detached write-capable worker running inside an isolated git worktree. Complete the implementation there."
+        : "If the request implies implementation, complete the implementation instead of stopping at diagnosis, planning, or commentary.",
     "</completeness_contract>",
     "",
     "<tooling_preference>",
@@ -234,6 +260,11 @@ export function buildTaskPrompt(
         "Do not edit files, run mutation commands, or change repository state in this turn.",
         "Return diagnosis, a concrete patch plan, or an explicit proposed diff instead of applying changes.",
       ]
+      : backgroundWrite
+        ? [
+          "You are not editing the user's shared working tree. Apply code changes only inside the isolated worktree for this job.",
+          "Shell execution is intentionally unavailable in this worker profile unless explicitly exposed as a tool. Make progress with the available editing and inspection tools.",
+        ]
       : []),
     "Keep communication concise and factual.",
     "</action_safety>",

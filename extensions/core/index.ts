@@ -12,6 +12,7 @@ import {
 import {
   internalTaskJobCommandName,
   launchBackgroundReadonlyTaskJob,
+  launchBackgroundWriteTaskJob,
   runDetachedTaskJob,
 } from "../../src/background/task-job.js";
 import { splitLeadingOptionTokens, splitShellLikeArgs } from "../../src/runtime/arg-parser.js";
@@ -36,7 +37,6 @@ import { executeReviewRun, type ReviewCommandOptions } from "../../src/review/re
 import { findStoredReview, listStoredReviews } from "../../src/runtime/review-store.js";
 import {
   renderConfigMarkdown,
-  renderTaskBackgroundBoundaryMarkdown,
   renderResearchQueuedMarkdown,
   renderReviewStatusMarkdown,
   renderStoredReviewMarkdown,
@@ -261,20 +261,9 @@ async function handleTaskCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext,
   }
 
   if (options.background) {
-    if (options.profile !== "readonly") {
-      sendReport(
-        pi,
-        "Codex Task",
-        renderTaskBackgroundBoundaryMarkdown(request, {
-          readOnly: false,
-          modelSpec: options.modelSpec,
-        }),
-        "warning",
-      );
-      return false;
-    }
-
-    const job = await launchBackgroundReadonlyTaskJob(pi, ctx, settings, request, options.modelSpec);
+    const job = options.profile === "readonly"
+      ? await launchBackgroundReadonlyTaskJob(pi, ctx, settings, request, options.modelSpec)
+      : await launchBackgroundWriteTaskJob(pi, ctx, settings, request, options.modelSpec);
     sendReport(
       pi,
       "Codex Task Job",

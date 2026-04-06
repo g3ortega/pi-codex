@@ -5,7 +5,6 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 
 import type { CodexSettings } from "../config/codex-settings.js";
-import { renderStoredTaskMarkdown } from "../task/task-render.js";
 import { getCurrentBranch, getRepoRoot } from "../review/git-context.js";
 import { resolveModel } from "../review/review-runner.js";
 import {
@@ -13,6 +12,7 @@ import {
   createTaskBackgroundJob,
   generateJobId,
   getJobLogFile,
+  getJobPatchFile,
   getJobResultFile,
   getJobResultJsonFile,
   getJobSessionDir,
@@ -22,26 +22,39 @@ import {
   updateBackgroundJob,
   writeTaskJobResult,
 } from "../runtime/job-store.js";
-import type { TaskBackgroundJob, TaskSnapshot } from "../runtime/job-types.js";
+import { resolveSessionIdentity } from "../runtime/session-identity.js";
 import {
   buildBackgroundReadOnlyToolPlan,
+  buildBackgroundWriteToolPlan,
   buildTaskPrompt,
   inspectResearchToolsFromNames,
   summarizeResearchRequest,
 } from "../runtime/session-prompts.js";
-import { resolveSessionIdentity } from "../runtime/session-identity.js";
+import {
+  captureTaskWorktreeDiff,
+  cleanupTaskWorktree,
+  createTaskWorktree,
+  type TaskWorktreeDiff,
+  type TaskWorktreeSetup,
+} from "../runtime/worktree.js";
+import { renderStoredTaskMarkdown } from "../task/task-render.js";
+import type {
+  CodexTaskExecutionProfile,
+  TaskBackgroundJob,
+  TaskJobResultPayload,
+  TaskSnapshot,
+} from "../runtime/job-types.js";
 
 const INTERNAL_TASK_JOB_COMMAND = "codex:internal-run-task-job";
 const CURRENT_EXTENSION_PATH = fileURLToPath(new URL("../../extensions/core/index.ts", import.meta.url));
 const MAX_TASK_JOB_DURATION_MS = 10 * 60 * 1_000;
+const WORKSPACE_ROOT_ENV = "PI_CODEX_WORKSPACE_ROOT";
 
 type AgentMessageLike = {
   role?: string;
   content?: Array<{ type?: string; text?: string }> | string;
   errorMessage?: string;
 };
-
-type AgentMessageEntryLike = AgentMessageLike;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -112,8 +125,8 @@ function extractAssistantText(messages: AgentMessageLike[] | undefined): string 
   return "";
 }
 
-function extractAssistantTextFromMessage(message: AgentMessageEntryLike | undefined): string {
-  return extractAssistantText(message ? [message] : undefined);
+function resolveJobWorkspaceRoot(cwd: string): string {
+  return process.env[WORKSPACE_ROOT_ENV]?.trim() || cwd;
 }
 
 function spawnDetachedTaskWorker(job: TaskBackgroundJob): number | null {
@@ -141,10 +154,10 @@ function spawnDetachedTaskWorker(job: TaskBackgroundJob): number | null {
     ];
 
     const child = spawn(process.execPath, args, {
-      cwd: job.repoRoot,
+      cwd: job.executionCwd,
       detached: true,
       stdio: ["ignore", stdout, stderr],
-      env: { ...process.env },
+      env: { ...process.env, [WORKSPACE_ROOT_ENV]: job.workspaceRoot },
       windowsHide: true,
     });
     child.unref();
@@ -155,26 +168,28 @@ function spawnDetachedTaskWorker(job: TaskBackgroundJob): number | null {
   }
 }
 
-export async function launchBackgroundReadonlyTaskJob(
+function buildTaskJob(
   pi: ExtensionAPI,
   ctx: ExtensionCommandContext,
   settings: CodexSettings,
   request: string,
+  profile: CodexTaskExecutionProfile,
   explicitModel?: string,
-): Promise<TaskBackgroundJob> {
+): { job: TaskBackgroundJob; snapshot: TaskSnapshot } {
   const sessionIdentity = resolveSessionIdentity(ctx);
   const repoRoot = safeRepoRoot(ctx.cwd);
   const branch = safeBranch(repoRoot);
-  const toolPlan = buildBackgroundReadOnlyToolPlan(pi);
   const model = resolveModel(ctx, settings, explicitModel);
+  const toolPlan = profile === "readonly" ? buildBackgroundReadOnlyToolPlan(pi) : buildBackgroundWriteToolPlan(pi);
   const id = generateJobId("task");
   const createdAt = nowIso();
   const sessionDir = getJobSessionDir(repoRoot, id);
   const thinkingLevel = typeof pi.getThinkingLevel === "function" ? pi.getThinkingLevel() : undefined;
+  const worktree = profile === "write" ? createTaskWorktree(ctx.cwd, id) : null;
 
   const snapshot: TaskSnapshot = {
     kind: "task",
-    profile: "readonly",
+    profile,
     repoRoot,
     branch,
     request: request.trim(),
@@ -191,7 +206,7 @@ export async function launchBackgroundReadonlyTaskJob(
     id,
     jobClass: "task",
     kind: "task",
-    profile: "readonly",
+    profile,
     workspaceRoot: repoRoot,
     cwd: ctx.cwd,
     repoRoot,
@@ -212,6 +227,7 @@ export async function launchBackgroundReadonlyTaskJob(
     inactiveAvailableWebTools: snapshot.inactiveAvailableWebTools,
     extensionPaths: snapshot.extensionPaths,
     sessionDir,
+    executionCwd: worktree?.agentCwd ?? repoRoot,
     createdAt,
     updatedAt: createdAt,
     status: "queued",
@@ -220,10 +236,30 @@ export async function launchBackgroundReadonlyTaskJob(
     resultFile: getJobResultFile(repoRoot, id),
     resultJsonFile: getJobResultJsonFile(repoRoot, id),
     logFile: getJobLogFile(repoRoot, id),
+    ...(worktree
+      ? {
+          worktreePath: worktree.worktreePath,
+          worktreeBranch: worktree.branch,
+          worktreeBaseCommit: worktree.baseCommit,
+          syntheticPaths: worktree.syntheticPaths,
+        }
+      : {}),
   };
 
+  return { job, snapshot };
+}
+
+function launchBackgroundTaskJob(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  settings: CodexSettings,
+  request: string,
+  profile: CodexTaskExecutionProfile,
+  explicitModel?: string,
+): TaskBackgroundJob {
+  const { job, snapshot } = buildTaskJob(pi, ctx, settings, request, profile, explicitModel);
   createTaskBackgroundJob(job, snapshot);
-  appendJobLog(job.workspaceRoot, job.id, "Queued background readonly task job.");
+  appendJobLog(job.workspaceRoot, job.id, `Queued background ${profile} task job.`);
 
   const runnerPid = spawnDetachedTaskWorker(job);
   const launchedAt = nowIso();
@@ -235,23 +271,97 @@ export async function launchBackgroundReadonlyTaskJob(
     updatedAt: launchedAt,
   })) as TaskBackgroundJob;
 
-  appendJobLog(launched.workspaceRoot, launched.id, runnerPid ? `Spawned background worker pid ${runnerPid}.` : "Spawned background worker.");
+  appendJobLog(
+    launched.workspaceRoot,
+    launched.id,
+    runnerPid ? `Spawned background ${profile} worker pid ${runnerPid}.` : `Spawned background ${profile} worker.`,
+  );
   return launched;
 }
 
-function markCancelled(workspaceRoot: string, jobId: string, reason: string): TaskBackgroundJob {
+export async function launchBackgroundReadonlyTaskJob(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  settings: CodexSettings,
+  request: string,
+  explicitModel?: string,
+): Promise<TaskBackgroundJob> {
+  return launchBackgroundTaskJob(pi, ctx, settings, request, "readonly", explicitModel);
+}
+
+export async function launchBackgroundWriteTaskJob(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  settings: CodexSettings,
+  request: string,
+  explicitModel?: string,
+): Promise<TaskBackgroundJob> {
+  return launchBackgroundTaskJob(pi, ctx, settings, request, "write", explicitModel);
+}
+
+function markCancelled(
+  workspaceRoot: string,
+  jobId: string,
+  reason: string,
+  artifactFields: Partial<TaskBackgroundJob> = {},
+): TaskBackgroundJob {
   const cancelledAt = nowIso();
   const next = updateBackgroundJob(workspaceRoot, jobId, (current) => ({
-    ...current,
+    ...(current as TaskBackgroundJob),
+    ...artifactFields,
     status: "cancelled",
     phase: "cancelled",
     updatedAt: cancelledAt,
-    cancelledAt: current.cancelledAt ?? cancelledAt,
+    cancelledAt: (current as TaskBackgroundJob).cancelledAt ?? cancelledAt,
     runnerPid: null,
     errorMessage: undefined,
   })) as TaskBackgroundJob;
   appendJobLog(workspaceRoot, jobId, reason);
   return next;
+}
+
+function buildWorktreeSetup(job: TaskBackgroundJob): TaskWorktreeSetup | null {
+  if (job.profile !== "write" || !job.worktreePath || !job.worktreeBranch || !job.worktreeBaseCommit) {
+    return null;
+  }
+
+  return {
+    repoRoot: job.repoRoot,
+    baseCommit: job.worktreeBaseCommit,
+    branch: job.worktreeBranch,
+    worktreePath: job.worktreePath,
+    agentCwd: job.executionCwd,
+    syntheticPaths: job.syntheticPaths ?? [],
+  };
+}
+
+function captureWriteArtifacts(job: TaskBackgroundJob): Partial<TaskBackgroundJob> {
+  const setup = buildWorktreeSetup(job);
+  if (!setup) {
+    return {};
+  }
+
+  try {
+    const diff = captureTaskWorktreeDiff(setup, getJobPatchFile(job.workspaceRoot, job.id));
+    return {
+      patchFile: diff.patchFile,
+      diffStat: diff.diffStat,
+      filesChanged: diff.filesChanged,
+      insertions: diff.insertions,
+      deletions: diff.deletions,
+    };
+  } catch (error) {
+    appendJobLog(job.workspaceRoot, job.id, `Failed to capture worktree diff artifact: ${error instanceof Error ? error.message : String(error)}`);
+    return {};
+  }
+}
+
+function cleanupWriteWorktree(job: TaskBackgroundJob): void {
+  const setup = buildWorktreeSetup(job);
+  if (!setup) {
+    return;
+  }
+  cleanupTaskWorktree(setup);
 }
 
 export async function runDetachedTaskJob(
@@ -260,7 +370,8 @@ export async function runDetachedTaskJob(
   _settings: CodexSettings,
   jobId: string,
 ): Promise<TaskBackgroundJob> {
-  const baseJob = readBackgroundJob(ctx.cwd, jobId);
+  const workspaceRoot = resolveJobWorkspaceRoot(ctx.cwd);
+  const baseJob = readBackgroundJob(workspaceRoot, jobId);
   if (!baseJob || baseJob.jobClass !== "task") {
     throw new Error(`Unknown background task job "${jobId}".`);
   }
@@ -270,7 +381,7 @@ export async function runDetachedTaskJob(
     throw new Error(`Missing task snapshot for "${baseJob.id}".`);
   }
 
-  const cancelledBeforeStart = readBackgroundJob(ctx.cwd, baseJob.id);
+  const cancelledBeforeStart = readBackgroundJob(workspaceRoot, baseJob.id);
   if (cancelledBeforeStart?.status === "cancelled" || cancelledBeforeStart?.status === "cancelling") {
     appendJobLog(baseJob.workspaceRoot, baseJob.id, "Job was already cancelled before execution started.");
     return markCancelled(baseJob.workspaceRoot, baseJob.id, "Job was already cancelled before execution started.");
@@ -287,10 +398,12 @@ export async function runDetachedTaskJob(
     runnerPid: process.pid,
   })) as TaskBackgroundJob;
 
-  appendJobLog(job.workspaceRoot, job.id, "Background readonly task execution started.");
+  appendJobLog(job.workspaceRoot, job.id, `Background ${snapshot.profile} task execution started.`);
 
   let cancellationRequested = false;
   let rejectCompletion: ((error: Error) => void) | null = null;
+  let capturedArtifacts: Partial<TaskBackgroundJob> | null = null;
+
   const signalHandler = (signal: NodeJS.Signals) => {
     cancellationRequested = true;
     rejectCompletion?.(new Error(`Background task cancelled by ${signal}.`));
@@ -300,7 +413,7 @@ export async function runDetachedTaskJob(
       // Best effort only.
     }
     try {
-      markCancelled(job.workspaceRoot, job.id, `Runner received ${signal}; marking job cancelled.`);
+      markCancelled(job.workspaceRoot, job.id, `Runner received ${signal}; marking job cancelled.`, capturedArtifacts ?? {});
     } catch {
       // Best effort during teardown.
     }
@@ -348,6 +461,14 @@ export async function runDetachedTaskJob(
   }, 2_000);
   heartbeat.unref();
 
+  const maybeCaptureWriteArtifacts = () => {
+    if (capturedArtifacts || snapshot.profile !== "write") {
+      return capturedArtifacts ?? {};
+    }
+    capturedArtifacts = captureWriteArtifacts(job);
+    return capturedArtifacts;
+  };
+
   try {
     const availableToolNames = new Set(pi.getAllTools().map((tool) => tool.name));
     const activeToolNames = snapshot.requestedToolNames.filter((toolName) => availableToolNames.has(toolName));
@@ -372,8 +493,10 @@ export async function runDetachedTaskJob(
     const effectiveSnapshot = inspectResearchToolsFromNames(pi, activeToolNames);
     const prompt = buildTaskPrompt(snapshot.request, activeToolNames, {
       readOnly: snapshot.profile === "readonly",
+      backgroundWrite: snapshot.profile === "write",
       activeWebTools: effectiveSnapshot.activeWebTools,
     });
+
     let awaitingAgentEnd = false;
     const completion = new Promise<string>((resolve, reject) => {
       let settled = false;
@@ -426,9 +549,7 @@ export async function runDetachedTaskJob(
           return;
         }
 
-        const text =
-          extractAssistantText(event.messages as AgentMessageLike[] | undefined) ||
-          extractAssistantTextFromMessage((event.messages as AgentMessageLike[] | undefined)?.at(-1));
+        const text = extractAssistantText(event.messages as AgentMessageLike[] | undefined);
         if (text) {
           if (!matchedAgentStart) {
             appendJobLog(job.workspaceRoot, job.id, "Accepted agent_end fallback without matching before_agent_start.");
@@ -444,26 +565,37 @@ export async function runDetachedTaskJob(
       });
     });
 
-    appendJobLog(job.workspaceRoot, job.id, "Dispatching background readonly task prompt.");
+    appendJobLog(job.workspaceRoot, job.id, `Dispatching background ${snapshot.profile} task prompt.`);
     awaitingAgentEnd = true;
     pi.sendUserMessage(prompt);
     const finalText = await completion;
 
-    const current = readBackgroundJob(ctx.cwd, job.id);
+    const current = readBackgroundJob(workspaceRoot, job.id);
     if (cancellationRequested || current?.status === "cancelled" || current?.status === "cancelling") {
-      return markCancelled(job.workspaceRoot, job.id, "Background task cancelled before completion.");
+      return markCancelled(job.workspaceRoot, job.id, "Background task cancelled before completion.", maybeCaptureWriteArtifacts());
     }
 
-    const resultPayload = {
+    const artifactFields = maybeCaptureWriteArtifacts();
+    const resultPayload: TaskJobResultPayload = {
       request: snapshot.request,
       profile: snapshot.profile,
       finalText,
       activeToolNames,
       missingToolNames,
+      ...(artifactFields.patchFile
+        ? {
+            patchFile: artifactFields.patchFile,
+            diffStat: artifactFields.diffStat,
+            filesChanged: artifactFields.filesChanged,
+            insertions: artifactFields.insertions,
+            deletions: artifactFields.deletions,
+          }
+        : {}),
     };
     const completedAt = nowIso();
     const completedJob = {
       ...job,
+      ...artifactFields,
       status: "completed" as const,
       phase: "completed",
       updatedAt: completedAt,
@@ -474,27 +606,28 @@ export async function runDetachedTaskJob(
       missingToolNames,
     };
     const markdown = renderStoredTaskMarkdown(completedJob, resultPayload);
-    const latestJob = readBackgroundJob(ctx.cwd, job.id);
+    const latestJob = readBackgroundJob(workspaceRoot, job.id);
     if (latestJob?.status === "cancelled" || latestJob?.status === "cancelling" || cancellationRequested) {
-      return markCancelled(job.workspaceRoot, job.id, "Background task cancelled before persisting a result.");
+      return markCancelled(job.workspaceRoot, job.id, "Background task cancelled before persisting a result.", artifactFields);
     }
-    writeTaskJobResult(job.workspaceRoot, job.id, resultPayload, markdown);
-    job = updateBackgroundJob(job.workspaceRoot, job.id, () => ({
-      ...completedJob,
-    })) as TaskBackgroundJob;
 
-    appendJobLog(job.workspaceRoot, job.id, "Background readonly task completed successfully.");
+    writeTaskJobResult(job.workspaceRoot, job.id, resultPayload, markdown);
+    job = updateBackgroundJob(job.workspaceRoot, job.id, () => ({ ...completedJob })) as TaskBackgroundJob;
+
+    appendJobLog(job.workspaceRoot, job.id, `Background ${snapshot.profile} task completed successfully.`);
     return job;
   } catch (error) {
-    const current = readBackgroundJob(ctx.cwd, job.id);
+    const artifactFields = maybeCaptureWriteArtifacts();
+    const current = readBackgroundJob(workspaceRoot, job.id);
     if (cancellationRequested || current?.status === "cancelled" || current?.status === "cancelling") {
-      return markCancelled(job.workspaceRoot, job.id, "Background task cancelled.");
+      return markCancelled(job.workspaceRoot, job.id, "Background task cancelled.", artifactFields);
     }
 
     const message = error instanceof Error ? error.message : String(error);
     const failedAt = nowIso();
     const failed = updateBackgroundJob(job.workspaceRoot, job.id, (current) => ({
-      ...current,
+      ...(current as TaskBackgroundJob),
+      ...artifactFields,
       status: "failed",
       phase: "failed",
       updatedAt: failedAt,
@@ -508,6 +641,9 @@ export async function runDetachedTaskJob(
     clearInterval(heartbeat);
     process.removeListener("SIGTERM", signalHandler);
     process.removeListener("SIGINT", signalHandler);
+    if (snapshot.profile === "write") {
+      cleanupWriteWorktree(job);
+    }
   }
 }
 

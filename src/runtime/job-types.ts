@@ -73,6 +73,11 @@ export interface TaskJobResultPayload {
   finalText: string;
   activeToolNames: string[];
   missingToolNames: string[];
+  patchFile?: string;
+  diffStat?: string;
+  filesChanged?: number;
+  insertions?: number;
+  deletions?: number;
 }
 
 interface BaseBackgroundJob {
@@ -148,6 +153,16 @@ export interface TaskBackgroundJob extends BaseBackgroundJob {
   extensionPaths: string[];
   missingToolNames?: string[];
   sessionDir: string;
+  executionCwd: string;
+  patchFile?: string;
+  diffStat?: string;
+  filesChanged?: number;
+  insertions?: number;
+  deletions?: number;
+  worktreePath?: string;
+  worktreeBranch?: string;
+  worktreeBaseCommit?: string;
+  syntheticPaths?: string[];
 }
 
 export type CodexBackgroundJob = ReviewBackgroundJob | ResearchBackgroundJob | TaskBackgroundJob;

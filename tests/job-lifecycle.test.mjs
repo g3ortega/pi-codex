@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -22,6 +23,7 @@ import {
   readTaskJobResult,
   updateBackgroundJob,
 } from "../src/runtime/job-store.ts";
+import { cleanupTaskWorktree, createTaskWorktree } from "../src/runtime/worktree.ts";
 
 function makeTempDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -43,6 +45,26 @@ async function withHomeDir(homeDir, fn) {
 
 function iso(offsetMs = 0) {
   return new Date(Date.now() + offsetMs).toISOString();
+}
+
+function git(cwd, args) {
+  const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
+  if (result.status !== 0) {
+    throw new Error(result.stderr.trim() || result.stdout.trim() || `git ${args.join(" ")} failed`);
+  }
+  return result.stdout;
+}
+
+function createGitRepo(prefix) {
+  const repoDir = makeTempDir(prefix);
+  git(repoDir, ["init", "-b", "main"]);
+  git(repoDir, ["config", "user.name", "Test User"]);
+  git(repoDir, ["config", "user.email", "test@example.com"]);
+  fs.writeFileSync(path.join(repoDir, ".gitignore"), "node_modules/\n", "utf8");
+  fs.writeFileSync(path.join(repoDir, "tracked.txt"), "base\n", "utf8");
+  git(repoDir, ["add", ".gitignore", "tracked.txt"]);
+  git(repoDir, ["commit", "-m", "initial"]);
+  return repoDir;
 }
 
 function buildReviewJob(workspaceRoot, overrides = {}) {
@@ -111,6 +133,7 @@ function buildResearchJob(workspaceRoot, overrides = {}) {
     inactiveAvailableWebTools: [],
     extensionPaths: [],
     sessionDir: getJobSessionDir(workspaceRoot, id),
+    executionCwd: workspaceRoot,
     snapshotFile: getJobSnapshotFile(workspaceRoot, id),
     resultFile: getJobResultFile(workspaceRoot, id),
     resultJsonFile: getJobResultJsonFile(workspaceRoot, id),
@@ -520,6 +543,112 @@ test("detached readonly task runner completes and persists a stored result", asy
     });
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("detached write task runner captures a patch artifact from an isolated worktree", async () => {
+  const repoDir = createGitRepo("pi-codex-task-write-");
+  const homeDir = path.join(repoDir, "home");
+
+  try {
+    await withHomeDir(homeDir, async () => {
+      const worktree = createTaskWorktree(repoDir, "task-write-complete");
+      createTaskBackgroundJob(
+        buildTaskJob(repoDir, {
+          id: "task-write-complete",
+          profile: "write",
+          request: "implement auth refresh retry",
+          requestSummary: "implement auth refresh retry",
+          requestedToolNames: ["read", "write", "edit"],
+          safeBuiltinTools: ["read", "grep", "find", "ls", "edit", "write"],
+          executionCwd: worktree.agentCwd,
+          worktreePath: worktree.worktreePath,
+          worktreeBranch: worktree.branch,
+          worktreeBaseCommit: worktree.baseCommit,
+          syntheticPaths: worktree.syntheticPaths,
+        }),
+        buildTaskSnapshot(repoDir, {
+          profile: "write",
+          request: "implement auth refresh retry",
+          requestedToolNames: ["read", "write", "edit"],
+          safeBuiltinTools: ["read", "grep", "find", "ls", "edit", "write"],
+        }),
+      );
+
+      const handlers = new Map();
+      let activated = [];
+      const previousWorkspaceRoot = process.env.PI_CODEX_WORKSPACE_ROOT;
+      process.env.PI_CODEX_WORKSPACE_ROOT = repoDir;
+      const result = await runDetachedTaskJob(
+        {
+          getAllTools() {
+            return [{ name: "read" }, { name: "edit" }, { name: "write" }];
+          },
+          setActiveTools(toolNames) {
+            activated = [...toolNames];
+          },
+          on(event, handler) {
+            handlers.set(event, handler);
+          },
+          sendUserMessage(prompt) {
+            fs.writeFileSync(path.join(worktree.worktreePath, "tracked.txt"), "changed\n", "utf8");
+            fs.writeFileSync(path.join(worktree.worktreePath, "new-file.ts"), "export const added = true;\n", "utf8");
+            handlers.get("before_agent_start")?.({ prompt });
+            queueMicrotask(() => {
+              handlers.get("agent_end")?.({
+                messages: [
+                  {
+                    role: "assistant",
+                    content: [{ type: "text", text: "Implemented the retry behavior in the isolated worktree." }],
+                  },
+                ],
+              });
+            });
+          },
+        },
+        {
+          cwd: worktree.agentCwd,
+          abort() {},
+        },
+        DUMMY_SETTINGS,
+        "task-write-complete",
+      ).finally(() => {
+        if (previousWorkspaceRoot === undefined) {
+          delete process.env.PI_CODEX_WORKSPACE_ROOT;
+        } else {
+          process.env.PI_CODEX_WORKSPACE_ROOT = previousWorkspaceRoot;
+        }
+      });
+
+      assert.equal(result.status, "completed");
+      assert.equal(result.profile, "write");
+      assert.deepEqual([...activated].sort(), ["edit", "read", "write"]);
+      assert.equal(fs.existsSync(worktree.worktreePath), false);
+      assert.ok(result.patchFile);
+      assert.equal(fs.existsSync(result.patchFile), true);
+      assert.match(fs.readFileSync(result.patchFile, "utf8"), /new-file\.ts/);
+
+      const stored = readTaskJobResult(repoDir, "task-write-complete");
+      assert.equal(stored?.profile, "write");
+      assert.ok(stored?.patchFile);
+      assert.ok((stored?.filesChanged ?? 0) >= 2);
+
+      const markdown = fs.readFileSync(getJobResultFile(repoDir, "task-write-complete"), "utf8");
+      assert.match(markdown, /Mode: write/);
+      assert.match(markdown, /Patch file:/);
+    });
+  } finally {
+    try {
+      cleanupTaskWorktree({
+        repoRoot: repoDir,
+        baseCommit: "",
+        branch: "pi-codex-task-task-write-complete",
+        worktreePath: path.join(os.tmpdir(), "pi-codex-worktree-task-write-complete"),
+        agentCwd: path.join(os.tmpdir(), "pi-codex-worktree-task-write-complete"),
+        syntheticPaths: ["node_modules"],
+      });
+    } catch {}
+    fs.rmSync(repoDir, { recursive: true, force: true });
   }
 });
 

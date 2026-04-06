@@ -154,6 +154,10 @@ export function getJobResultJsonFile(workspaceRoot: string, jobId: string): stri
   return join(getJobDir(workspaceRoot, jobId), "result.json");
 }
 
+export function getJobPatchFile(workspaceRoot: string, jobId: string): string {
+  return join(getJobDir(workspaceRoot, jobId), "patch.diff");
+}
+
 export function getJobLogFile(workspaceRoot: string, jobId: string): string {
   return join(getJobDir(workspaceRoot, jobId), "run.log");
 }

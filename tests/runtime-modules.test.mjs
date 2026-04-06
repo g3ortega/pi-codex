@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -18,6 +19,7 @@ import {
   getWorkspaceStateDirForRoot,
 } from "../src/runtime/state-paths.ts";
 import { buildInspectionRetryGuidance, buildResearchPrompt, buildTaskPrompt } from "../src/runtime/session-prompts.ts";
+import { captureTaskWorktreeDiff, cleanupTaskWorktree, createTaskWorktree } from "../src/runtime/worktree.ts";
 
 function makeTempDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -27,6 +29,26 @@ function cleanupWorkspace(cwd) {
   const stateDir = getWorkspaceStateDir(cwd);
   fs.rmSync(stateDir, { recursive: true, force: true });
   fs.rmSync(cwd, { recursive: true, force: true });
+}
+
+function git(cwd, args) {
+  const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
+  if (result.status !== 0) {
+    throw new Error(result.stderr.trim() || result.stdout.trim() || `git ${args.join(" ")} failed`);
+  }
+  return result.stdout;
+}
+
+function createGitRepo(prefix) {
+  const repoDir = makeTempDir(prefix);
+  git(repoDir, ["init", "-b", "main"]);
+  git(repoDir, ["config", "user.name", "Test User"]);
+  git(repoDir, ["config", "user.email", "test@example.com"]);
+  fs.writeFileSync(path.join(repoDir, ".gitignore"), "node_modules/\n", "utf8");
+  fs.writeFileSync(path.join(repoDir, "tracked.txt"), "base\n", "utf8");
+  git(repoDir, ["add", ".gitignore", "tracked.txt"]);
+  git(repoDir, ["commit", "-m", "initial"]);
+  return repoDir;
 }
 
 function reviewRun(overrides = {}) {
@@ -129,6 +151,13 @@ test("task prompt builder can force a read-only task mode", () => {
   assert.match(prompt, /Do not edit files, run mutation commands, or change repository state in this turn\./);
   assert.match(prompt, /Return diagnosis, a concrete patch plan, or an explicit proposed diff instead of applying changes\./);
   assert.doesNotMatch(prompt, /If the request implies implementation, complete the implementation/);
+});
+
+test("task prompt builder can frame an isolated background write worker", () => {
+  const prompt = buildTaskPrompt("implement retry logic", ["read", "edit", "write"], { backgroundWrite: true });
+  assert.match(prompt, /detached write-capable worker running inside an isolated git worktree/i);
+  assert.match(prompt, /Apply code changes only inside the isolated worktree for this job\./);
+  assert.match(prompt, /Shell execution is intentionally unavailable in this worker profile/i);
 });
 
 test("task prompt builder adapts inspection guidance to the active tool set", () => {
@@ -318,5 +347,51 @@ test("non-git workspaces use the cwd as the workspace root and still create jobs
     assert.equal(jobsDirForRoot, jobsDir);
   } finally {
     cleanupWorkspace(cwd);
+  }
+});
+
+test("task worktree helper preserves cwd, links node_modules, captures a patch, and cleans up", () => {
+  const repoDir = createGitRepo("pi-codex-worktree-helper-");
+  const nestedCwd = path.join(repoDir, "packages", "app");
+  fs.mkdirSync(nestedCwd, { recursive: true });
+  fs.mkdirSync(path.join(repoDir, "node_modules"), { recursive: true });
+  fs.writeFileSync(path.join(repoDir, "node_modules", "marker.txt"), "linked\n", "utf8");
+
+  try {
+    const runId = `unit-write-${Date.now().toString(36)}`;
+    const setup = createTaskWorktree(nestedCwd, runId);
+    assert.equal(fs.realpathSync(setup.repoRoot), fs.realpathSync(repoDir));
+    assert.equal(setup.agentCwd, path.join(setup.worktreePath, "packages", "app"));
+    assert.ok(setup.syntheticPaths.includes("node_modules"));
+    assert.equal(fs.existsSync(path.join(setup.worktreePath, "tracked.txt")), true);
+    assert.equal(fs.lstatSync(path.join(setup.worktreePath, "node_modules")).isSymbolicLink(), true);
+
+    fs.writeFileSync(path.join(setup.worktreePath, "tracked.txt"), "changed\n", "utf8");
+    fs.writeFileSync(path.join(setup.worktreePath, "new-file.ts"), "export const added = true;\n", "utf8");
+
+    const patchFile = path.join(repoDir, "artifacts.patch");
+    const diff = captureTaskWorktreeDiff(setup, patchFile);
+    assert.equal(fs.existsSync(patchFile), true);
+    assert.equal(diff.patchFile, patchFile);
+    assert.ok(diff.filesChanged >= 2);
+    assert.match(diff.diffStat, /tracked\.txt/);
+    assert.match(fs.readFileSync(patchFile, "utf8"), /new-file\.ts/);
+    assert.equal(fs.existsSync(path.join(setup.worktreePath, "node_modules")), false);
+
+    cleanupTaskWorktree(setup);
+    assert.equal(fs.existsSync(setup.worktreePath), false);
+  } finally {
+    fs.rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test("task worktree helper fails closed on dirty repositories", () => {
+  const repoDir = createGitRepo("pi-codex-worktree-dirty-");
+  fs.writeFileSync(path.join(repoDir, "tracked.txt"), "dirty\n", "utf8");
+
+  try {
+    assert.throws(() => createTaskWorktree(repoDir, `dirty-write-${Date.now().toString(36)}`), /clean git working tree/i);
+  } finally {
+    fs.rmSync(repoDir, { recursive: true, force: true });
   }
 });

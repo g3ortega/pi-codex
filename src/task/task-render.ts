@@ -37,6 +37,20 @@ export function renderStoredTaskMarkdown(job: TaskBackgroundJob, result: TaskJob
     lines.push("", "Missing requested tools:", ...bulletList(result.missingToolNames));
   }
 
+  if (job.profile === "write") {
+    lines.push(
+      "",
+      "Write-worker artifacts:",
+      `- Patch file: ${result.patchFile ?? job.patchFile ?? "none"}`,
+      `- Files changed: ${String(result.filesChanged ?? job.filesChanged ?? 0)}`,
+      `- Insertions: ${String(result.insertions ?? job.insertions ?? 0)}`,
+      `- Deletions: ${String(result.deletions ?? job.deletions ?? 0)}`,
+    );
+    if ((result.diffStat ?? job.diffStat)?.trim()) {
+      lines.push("", "Diff stat:", "", result.diffStat ?? job.diffStat ?? "");
+    }
+  }
+
   lines.push("", "Final answer:", "", result.finalText.trim());
   return `${lines.join("\n").trimEnd()}\n`;
 }

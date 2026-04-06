@@ -144,43 +144,6 @@ export function renderTaskQueuedMarkdown(
   return `${lines.join("\n").trimEnd()}\n`;
 }
 
-export function renderTaskBackgroundBoundaryMarkdown(
-  request: string,
-  options: { readOnly?: boolean; modelSpec?: string } = {},
-): string {
-  const lines = [
-    "# Codex Task",
-    "",
-    "Background write-capable task workers are not implemented yet.",
-    "",
-    "Current boundary:",
-    "- `/codex:review --background`, `/codex:research --background`, and `/codex:task --background --readonly ...` already run in detached Codex workers and notify the originating PI session on completion.",
-    "- `/codex:task` and `/codex:task --write ...` still execute inside the current PI session.",
-    "- `--background`, `--readonly`, `--write`, and `--model` are treated as host-side control flags and are not forwarded into the task text.",
-    "",
-    "Recommended alternatives right now:",
-    "- Use `/codex:task --background --readonly ...` for detached diagnosis or patch planning.",
-    "- Use `/codex:research --background ...` for detached read-only repo analysis, architecture review, and external research.",
-    "- Use `/codex:task ...` for inline implementation in the current session.",
-  ];
-
-  if (options.readOnly) {
-    lines.push("- This request already asked for a read-only worker and should use `/codex:task --background --readonly ...` instead.");
-  }
-  if (options.modelSpec) {
-    lines.push(`- Requested model override: \`${options.modelSpec}\``);
-  }
-
-  lines.push(
-    "",
-    "Request:",
-    "",
-    request.trim() || "(empty request)",
-  );
-
-  return `${lines.join("\n").trimEnd()}\n`;
-}
-
 export function renderResearchQueuedMarkdown(request: string, queued: boolean, snapshot: ResearchToolSnapshot): string {
   const lines = [
     "# Codex Research",
