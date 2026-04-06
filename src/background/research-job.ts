@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 
 import type { CodexSettings } from "../config/codex-settings.js";
+import { createSessionActivityWatchdog } from "./session-activity.js";
 import { renderStoredResearchMarkdown } from "../research/research-render.js";
 import { getCurrentBranch, getRepoRoot } from "../review/git-context.js";
 import { requireModelAuth, resolveModel } from "../review/review-runner.js";
@@ -33,7 +34,8 @@ import { resolveSessionIdentity } from "../runtime/session-identity.js";
 
 const INTERNAL_RESEARCH_JOB_COMMAND = "codex:internal-run-research-job";
 const CURRENT_EXTENSION_PATH = fileURLToPath(new URL("../../extensions/core/index.ts", import.meta.url));
-const MAX_RESEARCH_JOB_DURATION_MS = 5 * 60 * 1_000;
+const MAX_RESEARCH_JOB_DURATION_MS = 15 * 60 * 1_000;
+const MAX_RESEARCH_JOB_IDLE_MS = 3 * 60 * 1_000;
 
 type AgentMessageLike = {
   role?: string;
@@ -373,12 +375,20 @@ export async function runDetachedResearchJob(
     const completion = new Promise<string>((resolve, reject) => {
       let settled = false;
       let matchedAgentStart = false;
-      let timeout: NodeJS.Timeout | null = null;
+      const watchdog = createSessionActivityWatchdog({
+        sessionDir: job.sessionDir,
+        idleTimeoutMs: MAX_RESEARCH_JOB_IDLE_MS,
+        hardTimeoutMs: MAX_RESEARCH_JOB_DURATION_MS,
+        onTimeout: (kind) => {
+          const message =
+            kind === "idle"
+              ? `Background research was idle for ${Math.round(MAX_RESEARCH_JOB_IDLE_MS / 1_000)}s without new session activity.`
+              : `Background research exceeded ${Math.round(MAX_RESEARCH_JOB_DURATION_MS / 1_000)}s without reaching a terminal assistant response.`;
+          rejectCompletion?.(new Error(message));
+        },
+      });
       const settle = () => {
-        if (timeout) {
-          clearTimeout(timeout);
-          timeout = null;
-        }
+        watchdog.clear();
         awaitingAgentEnd = false;
         rejectCompletion = null;
       };
@@ -398,14 +408,6 @@ export async function runDetachedResearchJob(
         settle();
         resolve(value);
       };
-      timeout = setTimeout(() => {
-        rejectCompletion?.(
-          new Error(
-            `Background research exceeded ${Math.round(MAX_RESEARCH_JOB_DURATION_MS / 1_000)}s without reaching a terminal assistant response.`,
-          ),
-        );
-      }, MAX_RESEARCH_JOB_DURATION_MS);
-      timeout.unref();
 
       pi.on("before_agent_start", (event) => {
         if (settled || matchedAgentStart) {

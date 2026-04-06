@@ -72,9 +72,12 @@ test("research request summaries stay compact for job status output", () => {
   );
 });
 
-test("background research runner has a hard completion timeout and tolerates missing pre-start events", () => {
+test("background research runner uses a session-activity watchdog and tolerates missing pre-start events", () => {
   const source = fs.readFileSync(path.join(ROOT, "src/background/research-job.ts"), "utf8");
   assert.match(source, /MAX_RESEARCH_JOB_DURATION_MS/);
+  assert.match(source, /MAX_RESEARCH_JOB_IDLE_MS/);
+  assert.match(source, /createSessionActivityWatchdog/);
+  assert.match(source, /without new session activity/);
   assert.match(source, /Background research cancelled by/);
   assert.match(source, /without reaching a terminal assistant response/);
   assert.match(source, /before_agent_start/);

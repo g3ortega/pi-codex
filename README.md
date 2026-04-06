@@ -183,6 +183,7 @@ Background research runs in a detached PI child session with a headless-safe too
 
 Background jobs notify the originating PI session when they complete, fail, or are cancelled, so you can keep working in the main thread without polling.
 Short stored results are inlined directly into the completion notification; longer results show an answer-first preview with exact follow-up commands such as `/codex:result <job-id>` or `/codex:apply <job-id>`.
+Detached research and task workers use a progress-aware watchdog: they fail on prolonged inactivity, but ongoing session activity extends the run up to a larger hard cap.
 
 Inspect stored review history for the current workspace:
 
