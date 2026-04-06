@@ -13,6 +13,7 @@ This first implementation focuses on:
 - evidence-first research handoffs
 - structured repository reviews
 - adversarial reviews
+- background review and research jobs with completion notifications back into the originating PI session
 - project-aware Codex settings
 - protected-path guards for `write`, `edit`, and `bash` commands that target protected paths unless the command is explicitly read-only
 - compatibility with PI ecosystem safety packages
@@ -145,7 +146,17 @@ Queue a Codex-oriented implementation request into the active PI session:
 
 ```bash
 /codex:task investigate why auth refresh sometimes fails
+/codex:task --readonly diagnose the failing auth refresh flow and propose a patch
 ```
+
+`/codex:task` now treats `--readonly`, `--write`, `--background`, and `--model` as host-side execution flags instead of forwarding them into the natural-language task text.
+
+Current task boundary:
+
+- inline `/codex:task` runs in the current PI session
+- `--readonly` keeps the task read-only and asks for diagnosis or a proposed patch instead of edits
+- `--write` is explicit but matches the current default inline behavior
+- background task workers are not implemented yet, so `/codex:task --background ...` returns guidance instead of silently leaking flags into the task prompt
 
 Queue a Codex-oriented research request into the active PI session:
 
@@ -160,6 +171,8 @@ Background research runs in a detached PI child session with a headless-safe too
 - safe read-only built-ins: `read`, `grep`, `find`, `ls`
 - active web research tools only when they were already active in the launching PI session
 - no mutation tools in the detached child
+
+Background review and research jobs notify the originating PI session when they complete, fail, or are cancelled, so you can keep working in the main thread without polling.
 
 Inspect stored review history for the current workspace:
 
@@ -180,6 +193,8 @@ Config is merged from:
 4. `.pi/settings.json` under `codex`
 
 You can also open `/extension-settings` to manage the global extension-backed values.
+
+`pi-codex` stores its own review and background-job state under the active PI agent directory. If you run PI with `PI_CODING_AGENT_DIR=/some/path`, the package follows that location instead of always writing to the global `~/.pi/agent`.
 
 Current settings:
 

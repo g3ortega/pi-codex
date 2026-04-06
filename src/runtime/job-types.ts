@@ -58,6 +58,9 @@ interface BaseBackgroundJob {
   cwd: string;
   repoRoot: string;
   branch: string;
+  originSessionId?: string;
+  originSessionFile?: string;
+  originCwd?: string;
   modelProvider: string;
   modelId: string;
   modelSpec: string;
@@ -71,6 +74,8 @@ interface BaseBackgroundJob {
   phase: string;
   runnerPid?: number | null;
   errorMessage?: string;
+  notificationDeliveredAt?: string;
+  notifiedSessionId?: string;
   snapshotFile: string;
   resultFile: string;
   resultJsonFile: string;

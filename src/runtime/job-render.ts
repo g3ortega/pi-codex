@@ -6,7 +6,7 @@ function formatWhen(value: string | undefined): string {
 }
 
 export function renderBackgroundJobLaunchMarkdown(job: CodexBackgroundJob): string {
-  const title = job.jobClass === "review" ? (job.kind === "adversarial-review" ? "Codex Adversarial Review Job" : "Codex Review Job") : "Codex Research Job";
+  const title = backgroundJobTitle(job, true);
   const subjectLabel = job.jobClass === "review" ? "Target" : "Request";
   const lines = [
     `# ${title}`,
@@ -42,7 +42,7 @@ export function renderBackgroundJobLaunchMarkdown(job: CodexBackgroundJob): stri
 }
 
 export function renderBackgroundJobMarkdown(job: CodexBackgroundJob): string {
-  const title = job.jobClass === "review" ? (job.kind === "adversarial-review" ? "Codex Adversarial Review Job" : "Codex Review Job") : "Codex Research Job";
+  const title = backgroundJobTitle(job, true);
   const subjectLabel = job.jobClass === "review" ? "Target" : "Request";
   const lines = [
     `# ${title}`,
@@ -120,6 +120,97 @@ export function renderBackgroundJobMarkdown(job: CodexBackgroundJob): string {
       );
       break;
   }
+
+  return `${lines.join("\n").trimEnd()}\n`;
+}
+
+function summarizeText(text: string, limit = 320): string {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  const firstParagraph = trimmed.split(/\n\s*\n/u).find((entry) => entry.trim())?.trim() ?? trimmed;
+  const singleLine = firstParagraph.replace(/\s+/gu, " ").trim();
+  if (singleLine.length <= limit) {
+    return singleLine;
+  }
+  return `${singleLine.slice(0, limit - 3)}...`;
+}
+
+export function backgroundJobTitle(job: CodexBackgroundJob, includeJobSuffix = false): string {
+  const base = job.jobClass === "review"
+    ? (job.kind === "adversarial-review" ? "Codex Adversarial Review" : "Codex Review")
+    : "Codex Research";
+  return includeJobSuffix ? `${base} Job` : base;
+}
+
+export function backgroundJobNotificationTitle(job: CodexBackgroundJob): string {
+  const base = backgroundJobTitle(job, false);
+
+  switch (job.status) {
+    case "completed":
+      return `${base} Complete`;
+    case "failed":
+      return `${base} Failed`;
+    case "cancelled":
+      return `${base} Cancelled`;
+    case "lost":
+      return `${base} Lost`;
+    default:
+      return `${base} Update`;
+  }
+}
+
+export function backgroundJobReportVariant(job: CodexBackgroundJob): "info" | "success" | "warning" | "error" {
+  if (job.status === "failed" || job.status === "lost") {
+    return "error";
+  }
+  if (job.status === "cancelled") {
+    return "warning";
+  }
+  if (job.jobClass === "review" && job.resultVerdict === "needs-attention") {
+    return "warning";
+  }
+  if (job.status === "completed") {
+    return "success";
+  }
+  return "info";
+}
+
+export function renderBackgroundJobCompletionMarkdown(
+  job: CodexBackgroundJob,
+  summaryText?: string,
+): string {
+  const subjectLabel = job.jobClass === "review" ? "Target" : "Request";
+  const lines = [
+    `# ${backgroundJobNotificationTitle(job)}`,
+    "",
+    `- Job ID: ${job.id}`,
+    `- Kind: ${job.kind}`,
+    `- Status: ${job.status}`,
+    `- Repository: ${job.repoRoot}`,
+    `- Branch: ${job.branch}`,
+    `- ${subjectLabel}: ${backgroundJobSubject(job)}`,
+    `- Model: ${job.modelSpec}`,
+  ];
+
+  if (job.jobClass === "review" && job.resultVerdict) {
+    lines.push(`- Verdict: ${job.resultVerdict}`);
+  }
+
+  if (summaryText?.trim()) {
+    lines.push("", "Summary:", "", summarizeText(summaryText));
+  } else if (job.errorMessage?.trim()) {
+    lines.push("", "Error:", "", summarizeText(job.errorMessage));
+  }
+
+  lines.push(
+    "",
+    job.jobClass === "review"
+      ? `Use \`/codex:result ${job.id}\` for the full stored review.`
+      : `Use \`/codex:result ${job.id}\` for the full stored research result.`,
+  );
 
   return `${lines.join("\n").trimEnd()}\n`;
 }

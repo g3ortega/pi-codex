@@ -19,6 +19,7 @@ import {
   writeReviewJobResult,
 } from "../runtime/job-store.js";
 import type { ReviewBackgroundJob, ReviewSnapshot } from "../runtime/job-types.js";
+import { resolveSessionIdentity } from "../runtime/session-identity.js";
 import { collectReviewContext, resolveReviewTarget } from "../review/git-context.js";
 import { renderStoredReviewMarkdown } from "../review/review-render.js";
 import {
@@ -90,6 +91,7 @@ export async function launchBackgroundReviewJob(
   kind: "review" | "adversarial-review",
   options: ReviewCommandOptions,
 ): Promise<ReviewBackgroundJob> {
+  const sessionIdentity = resolveSessionIdentity(ctx);
   const target = resolveReviewTarget(ctx.cwd, {
     scope: options.scope ?? settings.defaultReviewScope,
     base: options.base,
@@ -119,6 +121,9 @@ export async function launchBackgroundReviewJob(
     cwd: ctx.cwd,
     repoRoot: reviewContext.repoRoot,
     branch: reviewContext.branch,
+    originSessionId: sessionIdentity.id,
+    originSessionFile: sessionIdentity.file,
+    originCwd: sessionIdentity.cwd,
     targetLabel: reviewContext.target.label,
     targetMode: reviewContext.target.mode,
     targetBaseRef: reviewContext.target.baseRef,

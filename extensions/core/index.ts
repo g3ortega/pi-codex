@@ -9,7 +9,7 @@ import {
   launchBackgroundResearchJob,
   runDetachedResearchJob,
 } from "../../src/background/research-job.js";
-import { splitShellLikeArgs } from "../../src/runtime/arg-parser.js";
+import { splitLeadingOptionTokens, splitShellLikeArgs } from "../../src/runtime/arg-parser.js";
 import { detectBuiltinAlternativeForBash } from "../../src/runtime/bash-alternatives.js";
 import {
   cancelBackgroundJob,
@@ -18,29 +18,26 @@ import {
   readBackgroundJobResultMarkdown,
 } from "../../src/runtime/job-store.js";
 import {
+  backgroundJobReportVariant,
   renderBackgroundJobLaunchMarkdown,
   renderBackgroundJobMarkdown,
   renderBackgroundJobsOverviewMarkdown,
 } from "../../src/runtime/job-render.js";
+import { REPORT_TYPE, sendReport, type ReportDetails } from "../../src/runtime/report-message.js";
+import { parseTaskCommandOptions } from "../../src/runtime/task-command-options.js";
 import { findProtectedPathInBashCommand, findProtectedPathMatch } from "../../src/runtime/path-protection.js";
 import { buildInspectionRetryGuidance, buildResearchPrompt, buildTaskPrompt, inspectResearchTools } from "../../src/runtime/session-prompts.js";
 import { executeReviewRun, type ReviewCommandOptions } from "../../src/review/review-runner.js";
 import { findStoredReview, listStoredReviews } from "../../src/runtime/review-store.js";
 import {
   renderConfigMarkdown,
+  renderTaskBackgroundBoundaryMarkdown,
   renderResearchQueuedMarkdown,
   renderReviewStatusMarkdown,
   renderStoredReviewMarkdown,
   renderTaskQueuedMarkdown,
 } from "../../src/review/review-render.js";
 
-type ReportDetails = {
-  title: string;
-  variant?: "info" | "success" | "warning" | "error";
-  timestamp: number;
-};
-
-const REPORT_TYPE = "codex-report";
 const IS_PRINT_MODE = process.argv.includes("-p") || process.argv.includes("--print");
 const LEGACY_PROMPT_ALIAS_TITLES: Record<string, string> = {
   "codex-review": "Codex Review",
@@ -60,32 +57,6 @@ function reportThemeName(variant: ReportDetails["variant"]): "customMessageBg" |
     default:
       return "customMessageBg";
   }
-}
-
-function sendReport(pi: ExtensionAPI, title: string, markdown: string, variant: ReportDetails["variant"] = "info"): void {
-  pi.sendMessage({
-    customType: REPORT_TYPE,
-    content: markdown,
-    display: true,
-    details: {
-      title,
-      variant,
-      timestamp: Date.now(),
-    } satisfies ReportDetails,
-  });
-}
-
-function reportVariantForBackgroundJob(job: Parameters<typeof renderBackgroundJobMarkdown>[0]): ReportDetails["variant"] {
-  if (job.status === "failed" || job.status === "cancelled" || job.status === "lost") {
-    return "warning";
-  }
-  if (job.jobClass === "review" && job.resultVerdict === "needs-attention") {
-    return "warning";
-  }
-  if (job.status === "completed") {
-    return "success";
-  }
-  return "info";
 }
 
 function createInjectedTurnWaiter() {
@@ -148,44 +119,9 @@ function buildLegacyPromptAliasGuidance(name: string, args: string): { title: st
   };
 }
 
-function splitLeadingOptionTokens(tokens: string[]): { optionTokens: string[]; remainderTokens: string[] } {
-  const optionTokens: string[] = [];
-  let index = 0;
-
-  while (index < tokens.length) {
-    const token = tokens[index];
-    if (token === "--") {
-      return {
-        optionTokens,
-        remainderTokens: tokens.slice(index + 1),
-      };
-    }
-    if (!token.startsWith("--")) {
-      return {
-        optionTokens,
-        remainderTokens: tokens.slice(index),
-      };
-    }
-
-    optionTokens.push(token);
-    index += 1;
-
-    const next = tokens[index];
-    if (next && next !== "--" && !next.startsWith("--")) {
-      optionTokens.push(next);
-      index += 1;
-    }
-  }
-
-  return {
-    optionTokens,
-    remainderTokens: [],
-  };
-}
-
 function parseReviewCommandOptions(rawArgs: string): ReviewCommandOptions {
   const tokens = splitShellLikeArgs(rawArgs);
-  const { optionTokens, remainderTokens } = splitLeadingOptionTokens(tokens);
+  const { optionTokens, remainderTokens } = splitLeadingOptionTokens(tokens, ["--scope", "--base", "--model"]);
   const options: ReviewCommandOptions = {};
   const focus: string[] = [...remainderTokens];
 
@@ -239,7 +175,7 @@ function parseReviewCommandOptions(rawArgs: string): ReviewCommandOptions {
 
 function parseResearchCommandOptions(rawArgs: string): { background: boolean; modelSpec?: string; request: string } {
   const tokens = splitShellLikeArgs(rawArgs);
-  const { optionTokens, remainderTokens } = splitLeadingOptionTokens(tokens);
+  const { optionTokens, remainderTokens } = splitLeadingOptionTokens(tokens, ["--model"]);
   const request: string[] = [...remainderTokens];
   let background = false;
   let modelSpec: string | undefined;
@@ -312,15 +248,40 @@ async function handleTaskCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext,
     return false;
   }
 
-  const request = rawArgs.trim();
+  const options = parseTaskCommandOptions(rawArgs);
+  const request = options.request;
   if (!request) {
     sendReport(pi, "Codex Task", "# Codex Task\n\nProvide a request, for example `/codex:task investigate why auth refresh fails`.\n", "warning");
     return false;
   }
 
+  if (options.background) {
+    sendReport(
+      pi,
+      "Codex Task",
+      renderTaskBackgroundBoundaryMarkdown(request, {
+        readOnly: options.profile === "readonly",
+        modelSpec: options.modelSpec,
+      }),
+      "warning",
+    );
+    return false;
+  }
+
   const deliverAs = ctx.isIdle() ? undefined : "followUp";
-  pi.sendUserMessage(buildTaskPrompt(request, pi.getActiveTools()), deliverAs ? { deliverAs } : undefined);
-  sendReport(pi, "Codex Task", renderTaskQueuedMarkdown(request, deliverAs === "followUp"), "info");
+  pi.sendUserMessage(
+    buildTaskPrompt(request, pi.getActiveTools(), { readOnly: options.profile === "readonly" }),
+    deliverAs ? { deliverAs } : undefined,
+  );
+  sendReport(
+    pi,
+    "Codex Task",
+    renderTaskQueuedMarkdown(request, deliverAs === "followUp", {
+      readOnly: options.profile === "readonly",
+      ignoredModelSpec: options.modelSpec,
+    }),
+    "info",
+  );
   return true;
 }
 
@@ -367,7 +328,7 @@ async function handleStatusCommand(pi: ExtensionAPI, ctx: ExtensionCommandContex
     return;
   }
   if (job) {
-    sendReport(pi, "Codex Job Status", renderBackgroundJobMarkdown(job), reportVariantForBackgroundJob(job));
+    sendReport(pi, "Codex Job Status", renderBackgroundJobMarkdown(job), backgroundJobReportVariant(job));
     return;
   }
 
@@ -411,7 +372,7 @@ async function handleResultCommand(pi: ExtensionAPI, ctx: ExtensionCommandContex
   if (job) {
     const markdown = readBackgroundJobResultMarkdown(job.workspaceRoot, job.id);
     if (markdown) {
-      sendReport(pi, "Codex Result", markdown, reportVariantForBackgroundJob(job));
+      sendReport(pi, "Codex Result", markdown, backgroundJobReportVariant(job));
       return;
     }
 
@@ -419,7 +380,7 @@ async function handleResultCommand(pi: ExtensionAPI, ctx: ExtensionCommandContex
       pi,
       "Codex Result",
       renderBackgroundJobMarkdown(job),
-      reportVariantForBackgroundJob(job),
+      backgroundJobReportVariant(job),
     );
     return;
   }

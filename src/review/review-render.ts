@@ -108,18 +108,75 @@ export function renderReviewStatusMarkdown(runs: StoredReviewRun[]): string {
   return `${lines.join("\n").trimEnd()}\n`;
 }
 
-export function renderTaskQueuedMarkdown(request: string, queued: boolean): string {
+export function renderTaskQueuedMarkdown(
+  request: string,
+  queued: boolean,
+  options: { readOnly?: boolean; ignoredModelSpec?: string } = {},
+): string {
   const lines = [
     "# Codex Task",
     "",
     queued
       ? "The Codex-style task has been queued as a follow-up in the current PI session."
       : "The Codex-style task has been injected into the current PI session.",
+    ...(options.readOnly
+      ? [
+        "",
+        "Mode:",
+        "",
+        "Read-only. This task will inspect, diagnose, or propose a patch, but it should not edit files in the current session.",
+      ]
+      : []),
+    ...(options.ignoredModelSpec
+      ? [
+        "",
+        "Model override:",
+        "",
+        `\`${options.ignoredModelSpec}\` was treated as a host-side flag and not forwarded into the task text. Inline \`/codex:task\` still uses the current PI session model.`,
+      ]
+      : []),
     "",
     "Request:",
     "",
     request.trim(),
   ];
+
+  return `${lines.join("\n").trimEnd()}\n`;
+}
+
+export function renderTaskBackgroundBoundaryMarkdown(
+  request: string,
+  options: { readOnly?: boolean; modelSpec?: string } = {},
+): string {
+  const lines = [
+    "# Codex Task",
+    "",
+    "Background task workers are not implemented yet.",
+    "",
+    "Current boundary:",
+    "- `/codex:review --background` and `/codex:research --background` already run in detached Codex workers and notify the originating PI session on completion.",
+    "- `/codex:task` still executes inside the current PI session.",
+    "- `--background`, `--readonly`, `--write`, and `--model` are treated as host-side control flags and are not forwarded into the task text.",
+    "",
+    "Recommended alternatives right now:",
+    "- Use `/codex:research --background ...` for detached read-only repo analysis, architecture review, and external research.",
+    "- Use `/codex:task --readonly ...` for inline read-only diagnosis or patch planning in the current session.",
+    "- Use `/codex:task ...` for inline implementation in the current session.",
+  ];
+
+  if (options.readOnly) {
+    lines.push("- Read-only task workers are the first planned background task profile.");
+  }
+  if (options.modelSpec) {
+    lines.push(`- Requested model override: \`${options.modelSpec}\``);
+  }
+
+  lines.push(
+    "",
+    "Request:",
+    "",
+    request.trim() || "(empty request)",
+  );
 
   return `${lines.join("\n").trimEnd()}\n`;
 }

@@ -29,6 +29,7 @@ import {
   inspectResearchToolsFromNames,
   summarizeResearchRequest,
 } from "../runtime/session-prompts.js";
+import { resolveSessionIdentity } from "../runtime/session-identity.js";
 
 const INTERNAL_RESEARCH_JOB_COMMAND = "codex:internal-run-research-job";
 const CURRENT_EXTENSION_PATH = fileURLToPath(new URL("../../extensions/core/index.ts", import.meta.url));
@@ -161,6 +162,7 @@ export async function launchBackgroundResearchJob(
   request: string,
   explicitModel?: string,
 ): Promise<ResearchBackgroundJob> {
+  const sessionIdentity = resolveSessionIdentity(ctx);
   const repoRoot = safeRepoRoot(ctx.cwd);
   const branch = safeBranch(repoRoot);
   const toolPlan = buildBackgroundResearchToolPlan(pi);
@@ -192,6 +194,9 @@ export async function launchBackgroundResearchJob(
     cwd: ctx.cwd,
     repoRoot,
     branch,
+    originSessionId: sessionIdentity.id,
+    originSessionFile: sessionIdentity.file,
+    originCwd: sessionIdentity.cwd,
     request: snapshot.request,
     requestSummary: summarizeResearchRequest(snapshot.request),
     modelProvider: model.provider,

@@ -5,7 +5,8 @@ import { spawnSync } from "node:child_process";
 import { basename, join } from "node:path";
 
 export function getCodexHome(): string {
-  return ensureDir(join(homedir(), ".pi", "agent", "codex"));
+  const agentRoot = process.env.PI_CODING_AGENT_DIR?.trim() || join(homedir(), ".pi", "agent");
+  return ensureDir(join(agentRoot, "codex"));
 }
 
 function getCodexWorkspacesHome(): string {

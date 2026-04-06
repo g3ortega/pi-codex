@@ -51,3 +51,42 @@ export function splitShellLikeArgs(input: string): string[] {
 
   return tokens;
 }
+
+export function splitLeadingOptionTokens(
+  tokens: string[],
+  optionsWithValues: Iterable<string> = [],
+): { optionTokens: string[]; remainderTokens: string[] } {
+  const optionTokens: string[] = [];
+  const optionsWithValueSet = new Set(optionsWithValues);
+  let index = 0;
+
+  while (index < tokens.length) {
+    const token = tokens[index];
+    if (token === "--") {
+      return {
+        optionTokens,
+        remainderTokens: tokens.slice(index + 1),
+      };
+    }
+    if (!token.startsWith("--")) {
+      return {
+        optionTokens,
+        remainderTokens: tokens.slice(index),
+      };
+    }
+
+    optionTokens.push(token);
+    index += 1;
+
+    const next = tokens[index];
+    if (optionsWithValueSet.has(token) && next && next !== "--" && !next.startsWith("--")) {
+      optionTokens.push(next);
+      index += 1;
+    }
+  }
+
+  return {
+    optionTokens,
+    remainderTokens: [],
+  };
+}

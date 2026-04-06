@@ -130,10 +130,15 @@ test("status, result, and cancel handlers degrade ambiguous job and stored-revie
 });
 
 test("slash command option parsing only consumes leading flags and respects end-of-options", () => {
-  const source = fs.readFileSync(path.join(ROOT, "extensions/core/index.ts"), "utf8");
-  assert.match(source, /function splitLeadingOptionTokens\(tokens: string\[\]\)/);
-  assert.match(source, /if \(token === "--"\)/);
-  assert.match(source, /remainderTokens: tokens\.slice\(index \+ 1\)/);
-  assert.match(source, /if \(!token\.startsWith\("--"\)\)/);
-  assert.match(source, /const \{ optionTokens, remainderTokens \} = splitLeadingOptionTokens\(tokens\)/);
+  const coreSource = fs.readFileSync(path.join(ROOT, "extensions/core/index.ts"), "utf8");
+  const parserSource = fs.readFileSync(path.join(ROOT, "src/runtime/arg-parser.ts"), "utf8");
+  assert.match(coreSource, /import \{ splitLeadingOptionTokens, splitShellLikeArgs \} from "\.\.\/\.\.\/src\/runtime\/arg-parser\.js"/);
+  assert.match(coreSource, /splitLeadingOptionTokens\(tokens, \["--scope", "--base", "--model"\]\)/);
+  assert.match(coreSource, /splitLeadingOptionTokens\(tokens, \["--model"\]\)/);
+  assert.match(parserSource, /export function splitLeadingOptionTokens\(/);
+  assert.match(parserSource, /if \(token === "--"\)/);
+  assert.match(parserSource, /remainderTokens: tokens\.slice\(index \+ 1\)/);
+  assert.match(parserSource, /if \(!token\.startsWith\("--"\)\)/);
+  assert.match(parserSource, /const optionsWithValueSet = new Set\(optionsWithValues\)/);
+  assert.match(parserSource, /if \(optionsWithValueSet\.has\(token\) && next && next !== "--" && !next\.startsWith\("--"\)\)/);
 });

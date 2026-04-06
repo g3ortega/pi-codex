@@ -172,7 +172,13 @@ export function inspectResearchToolsFromNames(pi: ExtensionAPI, activeToolNames:
   };
 }
 
-export function buildTaskPrompt(request: string, activeToolNames: string[] = ["find", "ls", "grep", "read", "bash"]): string {
+export function buildTaskPrompt(
+  request: string,
+  activeToolNames: string[] = ["find", "ls", "grep", "read", "bash"],
+  options: { readOnly?: boolean } = {},
+): string {
+  const readOnly = options.readOnly === true;
+
   return [
     "<task>",
     "Handle this repository task.",
@@ -188,7 +194,9 @@ export function buildTaskPrompt(request: string, activeToolNames: string[] = ["f
     "<completeness_contract>",
     "Inspect the repository before making assumptions.",
     "Prefer doing the work over only describing the work.",
-    "If the request implies implementation, complete the implementation instead of stopping at diagnosis, planning, or commentary.",
+    readOnly
+      ? "Stay read-only in this turn. If the user asked for implementation, inspect, diagnose, and propose a concrete patch or next step instead of editing files."
+      : "If the request implies implementation, complete the implementation instead of stopping at diagnosis, planning, or commentary.",
     "</completeness_contract>",
     "",
     "<tooling_preference>",
@@ -208,6 +216,12 @@ export function buildTaskPrompt(request: string, activeToolNames: string[] = ["f
     "<action_safety>",
     "Keep changes tightly scoped to the stated task.",
     "Avoid unrelated refactors, renames, or cleanup unless they are required for correctness.",
+    ...(readOnly
+      ? [
+        "Do not edit files, run mutation commands, or change repository state in this turn.",
+        "Return diagnosis, a concrete patch plan, or an explicit proposed diff instead of applying changes.",
+      ]
+      : []),
     "Keep communication concise and factual.",
     "</action_safety>",
   ].join("\n");

@@ -4,10 +4,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { splitShellLikeArgs } from "../src/runtime/arg-parser.ts";
+import { splitLeadingOptionTokens, splitShellLikeArgs } from "../src/runtime/arg-parser.ts";
 import { findProtectedPathInBashCommand, findProtectedPathMatch } from "../src/runtime/path-protection.ts";
 import { findStoredReview, listStoredReviews, storeReviewRun } from "../src/runtime/review-store.ts";
+import { parseTaskCommandOptions } from "../src/runtime/task-command-options.ts";
 import {
+  getCodexHome,
   getWorkspaceJobsDir,
   getWorkspaceJobsDirForRoot,
   getWorkspaceReviewsDir,
@@ -56,6 +58,62 @@ test("splitShellLikeArgs keeps quoted groups and escaped whitespace together", (
   );
 });
 
+test("splitLeadingOptionTokens only consumes the leading flag prefix and respects end-of-options", () => {
+  assert.deepEqual(
+    splitLeadingOptionTokens(
+      ["--background", "--model", "openai-codex/gpt-5.3-codex", "investigate", "--write", "semantics"],
+      ["--model"],
+    ),
+    {
+      optionTokens: ["--background", "--model", "openai-codex/gpt-5.3-codex"],
+      remainderTokens: ["investigate", "--write", "semantics"],
+    },
+  );
+
+  assert.deepEqual(
+    splitLeadingOptionTokens(["--readonly", "--", "--background", "literally"]),
+    {
+      optionTokens: ["--readonly"],
+      remainderTokens: ["--background", "literally"],
+    },
+  );
+
+  assert.deepEqual(
+    splitLeadingOptionTokens(["--background", "--write", "fix", "auth", "refresh"], ["--model"]),
+    {
+      optionTokens: ["--background", "--write"],
+      remainderTokens: ["fix", "auth", "refresh"],
+    },
+  );
+});
+
+test("task command options treat host flags as execution controls instead of task text", () => {
+  assert.deepEqual(
+    parseTaskCommandOptions('--readonly --model openai-codex/gpt-5.3-codex inspect "--background semantics"'),
+    {
+      background: false,
+      profile: "readonly",
+      modelSpec: "openai-codex/gpt-5.3-codex",
+      request: "inspect --background semantics",
+    },
+  );
+
+  assert.deepEqual(
+    parseTaskCommandOptions("--background --write fix auth refresh"),
+    {
+      background: true,
+      profile: "write",
+      modelSpec: undefined,
+      request: "fix auth refresh",
+    },
+  );
+
+  assert.throws(
+    () => parseTaskCommandOptions("--readonly --write fix auth refresh"),
+    /either `--readonly` or `--write`/i,
+  );
+});
+
 test("task prompt builder trims the request and preserves the Codex task contract", () => {
   const prompt = buildTaskPrompt("  investigate auth refresh races  ");
   assert.match(prompt, /<task>/);
@@ -63,6 +121,14 @@ test("task prompt builder trims the request and preserves the Codex task contrac
   assert.match(prompt, /<default_follow_through_policy>/);
   assert.match(prompt, /<verification_loop>/);
   assert.match(prompt, /Keep communication concise and factual\./);
+});
+
+test("task prompt builder can force a read-only task mode", () => {
+  const prompt = buildTaskPrompt("draft a fix plan", ["read", "grep"], { readOnly: true });
+  assert.match(prompt, /Stay read-only in this turn/);
+  assert.match(prompt, /Do not edit files, run mutation commands, or change repository state in this turn\./);
+  assert.match(prompt, /Return diagnosis, a concrete patch plan, or an explicit proposed diff instead of applying changes\./);
+  assert.doesNotMatch(prompt, /If the request implies implementation, complete the implementation/);
 });
 
 test("task prompt builder adapts inspection guidance to the active tool set", () => {
@@ -206,6 +272,26 @@ test("workspace state dir is stable across symlinked roots", () => {
     fs.rmSync(getWorkspaceStateDirForRoot(realRoot), { recursive: true, force: true });
     fs.rmSync(symlinkBase, { recursive: true, force: true });
     fs.rmSync(realRoot, { recursive: true, force: true });
+  }
+});
+
+test("codex state follows PI_CODING_AGENT_DIR when it is set", () => {
+  const agentRoot = makeTempDir("pi-codex-agent-root-");
+  const previous = process.env.PI_CODING_AGENT_DIR;
+
+  try {
+    process.env.PI_CODING_AGENT_DIR = agentRoot;
+    const codexHome = getCodexHome();
+    assert.equal(codexHome, path.join(agentRoot, "codex"));
+    assert.equal(fs.existsSync(codexHome), true);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.PI_CODING_AGENT_DIR;
+    } else {
+      process.env.PI_CODING_AGENT_DIR = previous;
+    }
+    fs.rmSync(path.join(agentRoot, "codex"), { recursive: true, force: true });
+    fs.rmSync(agentRoot, { recursive: true, force: true });
   }
 });
 

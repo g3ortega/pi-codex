@@ -66,6 +66,7 @@
     "extensions": [
       "./node_modules/@juanibiapina/pi-extension-settings/dist/index.js",
       "./extensions/core/index.ts",
+      "./extensions/notify/index.ts",
       "./node_modules/pi-bash-confirm/extensions/bash-confirm.ts",
       "./node_modules/pi-show-diffs/index.ts"
     ]

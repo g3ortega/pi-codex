@@ -248,6 +248,14 @@ export function readBackgroundJobResultMarkdown(workspaceRoot: string, jobId: st
   }
 }
 
+export function readReviewJobResult(workspaceRoot: string, jobId: string): ReviewJobResultPayload | null {
+  return readJsonFile<ReviewJobResultPayload>(getJobResultJsonFile(workspaceRoot, jobId));
+}
+
+export function readResearchJobResult(workspaceRoot: string, jobId: string): ResearchJobResultPayload | null {
+  return readJsonFile<ResearchJobResultPayload>(getJobResultJsonFile(workspaceRoot, jobId));
+}
+
 export function appendJobLog(workspaceRoot: string, jobId: string, message: string): void {
   const trimmed = message.trim();
   if (!trimmed) {
@@ -427,4 +435,27 @@ export function cancelBackgroundJob(cwd: string, reference?: string): CodexBackg
       : "Cancellation requested; awaiting worker acknowledgement.",
   );
   return cancelling;
+}
+
+export function markBackgroundJobNotified(workspaceRoot: string, jobId: string, sessionId?: string): CodexBackgroundJob {
+  return withJobLock(workspaceRoot, jobId, () => {
+    const current = readBackgroundJobById(workspaceRoot, jobId);
+    if (!current) {
+      throw new Error(`Unknown background job "${jobId}".`);
+    }
+
+    if (current.notificationDeliveredAt) {
+      return current;
+    }
+
+    const deliveredAt = new Date().toISOString();
+    const next = {
+      ...current,
+      notificationDeliveredAt: deliveredAt,
+      notifiedSessionId: sessionId ?? current.notifiedSessionId,
+      updatedAt: current.updatedAt,
+    };
+    writeJobArtifacts(next);
+    return next;
+  });
 }
