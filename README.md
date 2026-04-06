@@ -51,16 +51,20 @@ Alias commands are also registered:
 - `/codex-cancel`
 - `/codex-config`
 
-## Prompt templates
+## Reference prompts and skills
 
-The package also ships reusable prompt templates under `prompts/`:
+The repo includes reusable prompt templates under `references/prompts/`:
 
 - `codex-prompt-review`
 - `codex-prompt-adversarial-review`
 - `codex-prompt-task`
 - `codex-prompt-research`
 
-Use those when you want lightweight prompt steering. Use the `/codex:*` commands when you want the full packaged workflow.
+It also includes workflow guideline skill docs under `references/skills/`.
+
+These files are reference material, not auto-registered PI prompts or skills. They are intentionally kept out of PI's top-level `prompts/` and `skills/` auto-discovery paths to avoid duplicate-resource collisions when you work inside the `pi-codex` repo while the package is also installed globally.
+
+Use the `/codex:*` commands when you want the actual packaged workflow.
 
 The packaged workflow commands intentionally use the colon names:
 
@@ -68,8 +72,6 @@ The packaged workflow commands intentionally use the colon names:
 - `/codex:adversarial-review`
 - `/codex:task`
 - `/codex:research`
-
-The lightweight prompt templates intentionally use the `codex-prompt-*` prefix so they do not look like the packaged workflow commands.
 
 Legacy prompt-template names such as `/codex-review` and `/codex-adversarial-review` are blocked with guidance instead of being expanded, to avoid accidental bash-confirmation flows.
 

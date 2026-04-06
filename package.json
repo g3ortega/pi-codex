@@ -26,9 +26,8 @@
   "files": [
     "README.md",
     "extensions",
-    "prompts",
+    "references",
     "schemas",
-    "skills",
     "src",
     "tsconfig.json"
   ],
@@ -69,12 +68,6 @@
       "./extensions/core/index.ts",
       "./node_modules/pi-bash-confirm/extensions/bash-confirm.ts",
       "./node_modules/pi-show-diffs/index.ts"
-    ],
-    "prompts": [
-      "./prompts"
-    ],
-    "skills": [
-      "./skills"
     ]
   }
 }

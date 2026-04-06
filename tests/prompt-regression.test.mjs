@@ -104,10 +104,10 @@ test("adversarial review runtime prompt keeps the attack surface and deeper-chec
 });
 
 test("public prompt templates cover all packaged workflows with the same core contracts", () => {
-  const taskPrompt = read("prompts/codex-prompt-task.md");
-  const researchPrompt = read("prompts/codex-prompt-research.md");
-  const reviewPrompt = read("prompts/codex-prompt-review.md");
-  const adversarialPrompt = read("prompts/codex-prompt-adversarial-review.md");
+  const taskPrompt = read("references/prompts/codex-prompt-task.md");
+  const researchPrompt = read("references/prompts/codex-prompt-research.md");
+  const reviewPrompt = read("references/prompts/codex-prompt-review.md");
+  const adversarialPrompt = read("references/prompts/codex-prompt-adversarial-review.md");
 
   assertIncludesAll(
     taskPrompt,
@@ -188,7 +188,7 @@ test("standard review remains non-steerable and the README documents that bounda
   assert.match(readme, /`\/codex:review` stays non-steerable by design/i);
 });
 
-test("legacy hyphen command names are blocked and prompt templates use the codex-prompt prefix", () => {
+test("legacy hyphen command names are blocked and prompt references live outside PI auto-discovery paths", () => {
   const extensionSource = read("extensions/core/index.ts");
   const readme = read("README.md");
 
@@ -201,7 +201,8 @@ test("legacy hyphen command names are blocked and prompt templates use the codex
   assert.ok(!extensionSource.includes('registerCommandPair(pi, "codex-task"'), "extension should not register /codex-task pair alias");
   assert.ok(!extensionSource.includes('registerCommandPair(pi, "codex-research"'), "extension should not register /codex-research pair alias");
 
-  assert.ok(fs.existsSync(path.join(ROOT, "prompts/codex-prompt-review.md")), "review prompt template should use codex-prompt prefix");
+  assert.ok(fs.existsSync(path.join(ROOT, "references/prompts/codex-prompt-review.md")), "review prompt reference should exist under references/");
+  assert.ok(!fs.existsSync(path.join(ROOT, "prompts/codex-prompt-review.md")), "top-level prompts directory should no longer exist");
   assert.ok(!fs.existsSync(path.join(ROOT, "prompts/codex-review.md")), "legacy review prompt filename should be gone");
   assert.ok(!fs.existsSync(path.join(ROOT, "prompts/codex-adversarial-review.md")), "legacy adversarial prompt filename should be gone");
   assert.ok(!fs.existsSync(path.join(ROOT, "prompts/codex-task.md")), "legacy task prompt filename should be gone");
@@ -213,20 +214,21 @@ test("legacy hyphen command names are blocked and prompt templates use the codex
       "LEGACY_PROMPT_ALIAS_TITLES",
       "buildLegacyPromptAliasGuidance",
       "action: \"handled\"",
-      "codex-prompt-",
+      "references/prompts/",
     ],
     "legacy prompt alias guard",
   );
 
-  assert.match(readme, /The lightweight prompt templates intentionally use the `codex-prompt-\*` prefix/i);
+  assert.match(readme, /These files are reference material, not auto-registered PI prompts or skills/i);
+  assert.match(readme, /kept out of PI's top-level `prompts\/` and `skills\/` auto-discovery paths/i);
   assert.match(readme, /Legacy prompt-template names such as `\/codex-review` and `\/codex-adversarial-review` are blocked/i);
 });
 
-test("bundled skills have the required PI frontmatter metadata", () => {
+test("bundled skill references retain the required PI frontmatter metadata", () => {
   for (const relativePath of [
-    "skills/codex-review-guidelines/SKILL.md",
-    "skills/codex-research-guidelines/SKILL.md",
-    "skills/codex-task-guidelines/SKILL.md",
+    "references/skills/codex-review-guidelines/SKILL.md",
+    "references/skills/codex-research-guidelines/SKILL.md",
+    "references/skills/codex-task-guidelines/SKILL.md",
   ]) {
     const source = read(relativePath);
     assert.match(source, /^---\nname:\s.+\ndescription:\s.+\n---\n/m, `${relativePath} is missing required PI skill frontmatter`);

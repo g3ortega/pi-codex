@@ -133,7 +133,7 @@ function buildLegacyPromptAliasGuidance(name: string, args: string): { title: st
   const suffix = args ? ` ${args}` : "";
   const workflowCommand =
     name === "codex-review" && args ? `/codex:adversarial-review${suffix}` : `/codex:${name.slice("codex-".length)}${suffix}`;
-  const promptTemplate = `/${name.replace(/^codex-/, "codex-prompt-")}${suffix}`;
+  const promptReference = `references/prompts/${name.replace(/^codex-/, "codex-prompt-")}.md`;
 
   return {
     title,
@@ -143,7 +143,7 @@ function buildLegacyPromptAliasGuidance(name: string, args: string): { title: st
       `\`/${name}\` is intentionally disabled to avoid confusion with the packaged workflow commands and to prevent accidental shell-confirmation flows.`,
       "",
       `Use \`${workflowCommand}\` for the packaged workflow.`,
-      `Use \`${promptTemplate}\` only if you explicitly want the lightweight prompt template.`,
+      `The lightweight reference prompt for this workflow lives at \`${promptReference}\` in the package source and is not auto-registered as a PI prompt.`,
     ].join("\n"),
   };
 }
