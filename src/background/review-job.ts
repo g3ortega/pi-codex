@@ -28,6 +28,7 @@ import {
   resolveModel,
   type ReviewCommandOptions,
 } from "../review/review-runner.js";
+import { resolveEffectiveThinkingLevel } from "../runtime/thinking.js";
 
 const INTERNAL_REVIEW_JOB_COMMAND = "codex:internal-run-review-job";
 const CURRENT_EXTENSION_PATH = fileURLToPath(new URL("../../extensions/core/index.ts", import.meta.url));
@@ -67,6 +68,7 @@ function spawnDetachedReviewWorker(job: ReviewBackgroundJob): number | null {
       CURRENT_EXTENSION_PATH,
       "--model",
       job.modelSpec,
+      ...(job.thinkingLevel ? ["--thinking", job.thinkingLevel] : []),
       "-p",
       `/${INTERNAL_REVIEW_JOB_COMMAND} ${job.id}`,
     ];
@@ -100,6 +102,7 @@ export async function launchBackgroundReviewJob(
   const reviewContext = collectReviewContext(ctx.cwd, target);
   const model = resolveModel(ctx, settings, options.modelSpec);
   await requireModelAuth(ctx, model);
+  const thinkingLevel = resolveEffectiveThinkingLevel(model, options.thinkingLevel);
   const id = generateJobId(kind === "adversarial-review" ? "adversarial-review" : "review");
   const createdAt = nowIso();
 
@@ -112,6 +115,7 @@ export async function launchBackgroundReviewJob(
     targetBaseRef: reviewContext.target.baseRef,
     focusText: options.focusText?.trim() || undefined,
     modelSpec: modelSpec(model.provider, model.id),
+    thinkingLevel,
     reviewInput: reviewContext.content,
   };
 
@@ -133,6 +137,7 @@ export async function launchBackgroundReviewJob(
     modelProvider: model.provider,
     modelId: model.id,
     modelSpec: snapshot.modelSpec,
+    thinkingLevel,
     createdAt,
     updatedAt: createdAt,
     status: "queued",
@@ -284,6 +289,7 @@ export async function runDetachedReviewJob(
         targetBaseRef: snapshot.targetBaseRef,
         reviewInput: snapshot.reviewInput,
         modelSpec: snapshot.modelSpec,
+        thinkingLevel: snapshot.thinkingLevel,
         focusText: snapshot.focusText,
       },
       { persist: true, signal: abortController.signal },

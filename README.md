@@ -47,7 +47,7 @@ That gives the package strong write and shell safety defaults without taking ove
 - `/codex:cancel` for active background jobs
 - `/codex:config` for merged `pi-codex` settings
 
-PI command autocomplete can show common flags such as `--background`, `--scope`, `--readonly`, `--write`, `--model`, and `--last`.
+PI command autocomplete can show common flags such as `--background`, `--scope`, `--readonly`, `--write`, `--model`, `--thinking`, and `--last`.
 
 Alias commands are also registered:
 
@@ -144,6 +144,7 @@ Run a structured review of the current repository state:
 /codex:review
 /codex:review --scope working-tree
 /codex:review --base origin/main
+/codex:review --thinking high
 /codex:review --background --scope working-tree
 ```
 
@@ -153,6 +154,7 @@ Run a harsher blocking review:
 
 ```bash
 /codex:adversarial-review
+/codex:adversarial-review --thinking xhigh
 /codex:adversarial-review --scope branch
 /codex:adversarial-review --background --scope branch
 ```
@@ -161,16 +163,20 @@ Queue a Codex-oriented implementation request into the active PI session:
 
 ```bash
 /codex:task investigate why auth refresh sometimes fails
+/codex:task --thinking high investigate why auth refresh sometimes fails
 /codex:task --readonly diagnose the failing auth refresh flow and propose a patch
+/codex:task --background --readonly --thinking xhigh diagnose the failing auth refresh flow and propose a patch
 /codex:task --background --readonly diagnose the failing auth refresh flow and propose a patch
 /codex:task --background --write implement the auth refresh retry fix
 ```
 
-`/codex:task` now treats `--readonly`, `--write`, `--background`, and `--model` as host-side execution flags instead of forwarding them into the natural-language task text.
+`/codex:task` now treats `--readonly`, `--write`, `--background`, `--model`, and `--thinking` as host-side execution flags instead of forwarding them into the natural-language task text.
 
 Current task boundary:
 
 - inline `/codex:task` runs in the current PI session
+- if you omit `--thinking`, inline and background tasks inherit the current PI session thinking level
+- inline `/codex:task --thinking ...` temporarily overrides the current PI session thinking level for the injected turn only; if the agent is already streaming, use `--background` or wait until the session is idle
 - `--readonly` keeps the task read-only and asks for diagnosis or a proposed patch instead of edits
 - `--write` is explicit but matches the current default inline behavior
 - `/codex:task --background --readonly ...` runs in a detached readonly worker and notifies the originating PI session on completion
@@ -182,8 +188,10 @@ Queue a Codex-oriented research request into the active PI session:
 
 ```bash
 /codex:research compare PI extension APIs with Codex CLI and verify current web-tooling options
+/codex:research --thinking high compare PI extension APIs with Codex CLI and verify current web-tooling options
 /codex:research deeply inspect the repo, then use web tools if available to validate the best package architecture
 /codex:research --background summarize the repo and key commands
+/codex:research --background --thinking xhigh summarize the repo and key commands
 ```
 
 Background research runs in a detached PI child session with a headless-safe tool surface:
@@ -191,6 +199,22 @@ Background research runs in a detached PI child session with a headless-safe too
 - safe read-only built-ins: `read`, `grep`, `find`, `ls`
 - active web research tools only when they were already active in the launching PI session
 - no mutation tools in the detached child
+
+Current research boundary:
+
+- inline `/codex:research` runs in the current PI session
+- if you omit `--thinking`, inline and background research inherit the current PI session thinking level
+- inline `/codex:research --thinking ...` temporarily overrides the current PI session thinking level for the injected turn only; if the agent is already streaming, use `--background` or wait until the session is idle
+- background `/codex:research --thinking ...` runs in a detached readonly worker and preserves the selected thinking level in job launch, status, and result views
+
+All major `pi-codex` workflows accept `--thinking off|minimal|low|medium|high|xhigh`:
+
+- `/codex:review`
+- `/codex:adversarial-review`
+- `/codex:task`
+- `/codex:research`
+
+When omitted, `pi-codex` inherits the current PI session thinking level and clamps it to the selected model's capabilities.
 
 Background jobs notify the originating PI session when they complete, fail, or are cancelled, so you can keep working in the main thread without polling.
 Short stored results are inlined directly into the completion notification; longer results show an answer-first preview with exact follow-up commands such as `/codex:result --last`, `/codex:result <job-id>`, or `/codex:apply <job-id>`.

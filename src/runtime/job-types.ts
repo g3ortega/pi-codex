@@ -1,4 +1,5 @@
 import type { StoredReviewRun, ReviewVerdict } from "../review/review-schema.js";
+import type { CodexThinkingLevel } from "./thinking.js";
 
 export type CodexJobClass = "review" | "research" | "task";
 export type CodexReviewJobKind = "review" | "adversarial-review";
@@ -24,6 +25,7 @@ export interface ReviewSnapshot {
   targetBaseRef?: string;
   focusText?: string;
   modelSpec: string;
+  thinkingLevel?: CodexThinkingLevel;
   reviewInput: string;
 }
 
@@ -37,7 +39,7 @@ export interface ResearchSnapshot {
   branch: string;
   request: string;
   modelSpec: string;
-  thinkingLevel?: string;
+  thinkingLevel?: CodexThinkingLevel;
   requestedToolNames: string[];
   safeBuiltinTools: string[];
   activeWebTools: string[];
@@ -59,7 +61,7 @@ export interface TaskSnapshot {
   branch: string;
   request: string;
   modelSpec: string;
-  thinkingLevel?: string;
+  thinkingLevel?: CodexThinkingLevel;
   requestedToolNames: string[];
   safeBuiltinTools: string[];
   activeWebTools: string[];
@@ -119,6 +121,7 @@ export interface ReviewBackgroundJob extends BaseBackgroundJob {
   targetMode: "working-tree" | "branch";
   targetBaseRef?: string;
   focusText?: string;
+  thinkingLevel?: CodexThinkingLevel;
   resultVerdict?: ReviewVerdict;
 }
 
@@ -127,7 +130,7 @@ export interface ResearchBackgroundJob extends BaseBackgroundJob {
   kind: CodexResearchJobKind;
   request: string;
   requestSummary: string;
-  thinkingLevel?: string;
+  thinkingLevel?: CodexThinkingLevel;
   requestedToolNames: string[];
   activeToolNames: string[];
   safeBuiltinTools: string[];
@@ -144,7 +147,7 @@ export interface TaskBackgroundJob extends BaseBackgroundJob {
   profile: CodexTaskExecutionProfile;
   request: string;
   requestSummary: string;
-  thinkingLevel?: string;
+  thinkingLevel?: CodexThinkingLevel;
   requestedToolNames: string[];
   activeToolNames: string[];
   safeBuiltinTools: string[];

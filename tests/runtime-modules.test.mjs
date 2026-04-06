@@ -206,21 +206,23 @@ test("splitLeadingOptionTokens only consumes the leading flag prefix and respect
 
 test("task command options treat host flags as execution controls instead of task text", () => {
   assert.deepEqual(
-    parseTaskCommandOptions('--readonly --model openai-codex/gpt-5.3-codex inspect "--background semantics"'),
+    parseTaskCommandOptions('--readonly --model openai-codex/gpt-5.3-codex --thinking high inspect "--background semantics"'),
     {
       background: false,
       profile: "readonly",
       modelSpec: "openai-codex/gpt-5.3-codex",
+      thinkingLevel: "high",
       request: "inspect --background semantics",
     },
   );
 
   assert.deepEqual(
-    parseTaskCommandOptions("--background --write fix auth refresh"),
+    parseTaskCommandOptions("--background --write --thinking off fix auth refresh"),
     {
       background: true,
       profile: "write",
       modelSpec: undefined,
+      thinkingLevel: "off",
       request: "fix auth refresh",
     },
   );
@@ -661,6 +663,7 @@ test("registered commands expose useful argument completions and stop suggesting
   const reviewRootCompletions = reviewCommand.getArgumentCompletions("");
   assert.ok(reviewRootCompletions.some((item) => item.label === "--background"));
   assert.ok(reviewRootCompletions.some((item) => item.label === "--scope working-tree"));
+  assert.ok(reviewRootCompletions.some((item) => item.label === "--thinking high"));
 
   const scopeValueCompletions = reviewCommand.getArgumentCompletions("--scope ");
   assert.deepEqual(
@@ -675,13 +678,756 @@ test("registered commands expose useful argument completions and stop suggesting
   assert.ok(taskRootCompletions.some((item) => item.label === "--readonly"));
   assert.ok(taskRootCompletions.some((item) => item.label === "--write"));
   assert.ok(taskRootCompletions.some((item) => item.label === "--background"));
+  assert.ok(taskRootCompletions.some((item) => item.label === "--thinking xhigh"));
   assert.equal(taskCommand.getArgumentCompletions("diagnose auth refresh"), null);
+  const taskThinkingValueCompletions = taskCommand.getArgumentCompletions("--thinking ");
+  assert.ok(taskThinkingValueCompletions.some((item) => item.label === "off"));
+  assert.ok(taskThinkingValueCompletions.some((item) => item.label === "xhigh"));
 
   const researchRootCompletions = researchCommand.getArgumentCompletions("");
   assert.ok(researchRootCompletions.some((item) => item.label === "--background"));
+  assert.ok(researchRootCompletions.some((item) => item.label === "--thinking medium"));
 
   const resultRootCompletions = resultCommand.getArgumentCompletions("");
   assert.ok(resultRootCompletions.some((item) => item.label === "--last"));
+});
+
+test("inline task --thinking temporarily overrides the session effort for the injected turn only", async () => {
+  const commands = new Map();
+  const handlers = new Map();
+  const reports = [];
+  const sentMessages = [];
+  const thinkingTransitions = [];
+  let currentThinking = "medium";
+
+  registerCodexExtension({
+    registerCommand(name, options) {
+      commands.set(name, options);
+    },
+    on(name, handler) {
+      handlers.set(name, handler);
+    },
+    registerMessageRenderer() {},
+    sendMessage(message, options) {
+      reports.push({ message, options });
+    },
+    sendUserMessage(content, options) {
+      sentMessages.push({ content, options });
+    },
+    getActiveTools() {
+      return ["read", "grep", "find", "ls"];
+    },
+    getAllTools() {
+      return [];
+    },
+    getThinkingLevel() {
+      return currentThinking;
+    },
+    setThinkingLevel(level) {
+      currentThinking = level;
+      thinkingTransitions.push(level);
+    },
+    events: {
+      emit() {},
+    },
+  });
+
+  const taskCommand = commands.get("codex:task");
+  assert.equal(typeof taskCommand?.handler, "function");
+
+  await taskCommand.handler("--readonly --thinking xhigh diagnose auth refresh", {
+    cwd: process.cwd(),
+    hasUI: false,
+    model: undefined,
+    modelRegistry: {},
+    signal: undefined,
+    abort() {},
+    compact() {},
+    getContextUsage() {
+      return undefined;
+    },
+    getSystemPrompt() {
+      return "";
+    },
+    hasPendingMessages() {
+      return false;
+    },
+    isIdle() {
+      return true;
+    },
+    sessionManager: {
+      buildSessionContext() {
+        return { messages: [], thinkingLevel: currentThinking, model: null };
+      },
+    },
+    shutdown() {},
+    ui: {
+      notify() {},
+      setStatus() {},
+      theme: {
+        fg(_token, value) {
+          return value;
+        },
+        bg(_token, value) {
+          return value;
+        },
+        bold(value) {
+          return value;
+        },
+      },
+    },
+  });
+
+  assert.equal(currentThinking, "xhigh");
+  assert.equal(sentMessages.length, 1);
+  assert.match(String(reports.at(-1)?.message?.content ?? ""), /temporary thinking level of `xhigh`/i);
+
+  const turnStart = handlers.get("turn_start");
+  const turnEnd = handlers.get("turn_end");
+  assert.equal(typeof turnStart, "function");
+  assert.equal(typeof turnEnd, "function");
+  await turnStart({ turnIndex: 7 });
+  await turnEnd({ turnIndex: 7 });
+
+  assert.equal(currentThinking, "medium");
+  assert.deepEqual(thinkingTransitions, ["xhigh", "medium"]);
+});
+
+test("inline task --thinking restore ignores unrelated turn_end events and restores only on the matching turn", async () => {
+  const commands = new Map();
+  const handlers = new Map();
+  let currentThinking = "medium";
+
+  registerCodexExtension({
+    registerCommand(name, options) {
+      commands.set(name, options);
+    },
+    on(name, handler) {
+      handlers.set(name, handler);
+    },
+    registerMessageRenderer() {},
+    sendMessage() {},
+    sendUserMessage() {},
+    getActiveTools() {
+      return ["read", "grep", "find", "ls"];
+    },
+    getAllTools() {
+      return [];
+    },
+    getThinkingLevel() {
+      return currentThinking;
+    },
+    setThinkingLevel(level) {
+      currentThinking = level;
+    },
+    events: {
+      emit() {},
+    },
+  });
+
+  const taskCommand = commands.get("codex:task");
+  assert.equal(typeof taskCommand?.handler, "function");
+
+  await taskCommand.handler("--readonly --thinking xhigh diagnose auth refresh", {
+    cwd: process.cwd(),
+    hasUI: false,
+    model: undefined,
+    modelRegistry: {},
+    signal: undefined,
+    abort() {},
+    compact() {},
+    getContextUsage() {
+      return undefined;
+    },
+    getSystemPrompt() {
+      return "";
+    },
+    hasPendingMessages() {
+      return false;
+    },
+    isIdle() {
+      return true;
+    },
+    sessionManager: {
+      buildSessionContext() {
+        return { messages: [], thinkingLevel: currentThinking, model: null };
+      },
+    },
+    shutdown() {},
+    ui: {
+      notify() {},
+      setStatus() {},
+      theme: {
+        fg(_token, value) {
+          return value;
+        },
+        bg(_token, value) {
+          return value;
+        },
+        bold(value) {
+          return value;
+        },
+      },
+    },
+  });
+
+  const turnStart = handlers.get("turn_start");
+  const turnEnd = handlers.get("turn_end");
+  assert.equal(typeof turnStart, "function");
+  assert.equal(typeof turnEnd, "function");
+
+  await turnStart({ turnIndex: 3 });
+  await turnEnd({ turnIndex: 2 });
+  assert.equal(currentThinking, "xhigh");
+
+  await turnEnd({ turnIndex: 3 });
+  assert.equal(currentThinking, "medium");
+});
+
+test("inline task --thinking restores on turn_end even when turn lifecycle events have no usable index", async () => {
+  const commands = new Map();
+  const handlers = new Map();
+  let currentThinking = "medium";
+
+  registerCodexExtension({
+    registerCommand(name, options) {
+      commands.set(name, options);
+    },
+    on(name, handler) {
+      handlers.set(name, handler);
+    },
+    registerMessageRenderer() {},
+    sendMessage() {},
+    sendUserMessage() {},
+    getActiveTools() {
+      return ["read", "grep", "find", "ls"];
+    },
+    getAllTools() {
+      return [];
+    },
+    getThinkingLevel() {
+      return currentThinking;
+    },
+    setThinkingLevel(level) {
+      currentThinking = level;
+    },
+    events: {
+      emit() {},
+    },
+  });
+
+  const taskCommand = commands.get("codex:task");
+  assert.equal(typeof taskCommand?.handler, "function");
+
+  await taskCommand.handler("--readonly --thinking xhigh diagnose auth refresh", {
+    cwd: process.cwd(),
+    hasUI: false,
+    model: undefined,
+    modelRegistry: {},
+    signal: undefined,
+    abort() {},
+    compact() {},
+    getContextUsage() {
+      return undefined;
+    },
+    getSystemPrompt() {
+      return "";
+    },
+    hasPendingMessages() {
+      return false;
+    },
+    isIdle() {
+      return true;
+    },
+    sessionManager: {
+      buildSessionContext() {
+        return { messages: [], thinkingLevel: currentThinking, model: null };
+      },
+    },
+    shutdown() {},
+    ui: {
+      notify() {},
+      setStatus() {},
+      theme: {
+        fg(_token, value) {
+          return value;
+        },
+        bg(_token, value) {
+          return value;
+        },
+        bold(value) {
+          return value;
+        },
+      },
+    },
+  });
+
+  const turnEnd = handlers.get("turn_end");
+  assert.equal(typeof turnEnd, "function");
+  assert.equal(currentThinking, "xhigh");
+
+  await turnEnd({});
+  assert.equal(currentThinking, "medium");
+});
+
+test("inline task --thinking does not overwrite a later manual thinking-level change", async () => {
+  const commands = new Map();
+  const handlers = new Map();
+  let currentThinking = "medium";
+
+  registerCodexExtension({
+    registerCommand(name, options) {
+      commands.set(name, options);
+    },
+    on(name, handler) {
+      handlers.set(name, handler);
+    },
+    registerMessageRenderer() {},
+    sendMessage() {},
+    sendUserMessage() {},
+    getActiveTools() {
+      return ["read", "grep", "find", "ls"];
+    },
+    getAllTools() {
+      return [];
+    },
+    getThinkingLevel() {
+      return currentThinking;
+    },
+    setThinkingLevel(level) {
+      currentThinking = level;
+    },
+    events: {
+      emit() {},
+    },
+  });
+
+  const taskCommand = commands.get("codex:task");
+  assert.equal(typeof taskCommand?.handler, "function");
+
+  await taskCommand.handler("--readonly --thinking xhigh diagnose auth refresh", {
+    cwd: process.cwd(),
+    hasUI: false,
+    model: undefined,
+    modelRegistry: {},
+    signal: undefined,
+    abort() {},
+    compact() {},
+    getContextUsage() {
+      return undefined;
+    },
+    getSystemPrompt() {
+      return "";
+    },
+    hasPendingMessages() {
+      return false;
+    },
+    isIdle() {
+      return true;
+    },
+    sessionManager: {
+      buildSessionContext() {
+        return { messages: [], thinkingLevel: currentThinking, model: null };
+      },
+    },
+    shutdown() {},
+    ui: {
+      notify() {},
+      setStatus() {},
+      theme: {
+        fg(_token, value) {
+          return value;
+        },
+        bg(_token, value) {
+          return value;
+        },
+        bold(value) {
+          return value;
+        },
+      },
+    },
+  });
+
+  const turnStart = handlers.get("turn_start");
+  const turnEnd = handlers.get("turn_end");
+  assert.equal(typeof turnStart, "function");
+  assert.equal(typeof turnEnd, "function");
+
+  await turnStart({ turnIndex: 5 });
+  currentThinking = "low";
+  await turnEnd({ turnIndex: 5 });
+  assert.equal(currentThinking, "low");
+});
+
+test("inline task --thinking stale watchdog does not restore while the agent is still running", async () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  const scheduled = [];
+  globalThis.setTimeout = (fn, _ms) => {
+    const handle = { unref() {}, fn };
+    scheduled.push(handle);
+    return handle;
+  };
+  globalThis.clearTimeout = (handle) => {
+    const index = scheduled.indexOf(handle);
+    if (index >= 0) {
+      scheduled.splice(index, 1);
+    }
+  };
+
+  try {
+    const commands = new Map();
+    const handlers = new Map();
+    let currentThinking = "medium";
+
+    registerCodexExtension({
+      registerCommand(name, options) {
+        commands.set(name, options);
+      },
+      on(name, handler) {
+        handlers.set(name, handler);
+      },
+      registerMessageRenderer() {},
+      sendMessage() {},
+      sendUserMessage() {},
+      getActiveTools() {
+        return ["read", "grep", "find", "ls"];
+      },
+      getAllTools() {
+        return [];
+      },
+      getThinkingLevel() {
+        return currentThinking;
+      },
+      setThinkingLevel(level) {
+        currentThinking = level;
+      },
+      events: {
+        emit() {},
+      },
+    });
+
+    const taskCommand = commands.get("codex:task");
+    assert.equal(typeof taskCommand?.handler, "function");
+
+    await taskCommand.handler("--readonly --thinking xhigh diagnose auth refresh", {
+      cwd: process.cwd(),
+      hasUI: false,
+      model: undefined,
+      modelRegistry: {},
+      signal: undefined,
+      abort() {},
+      compact() {},
+      getContextUsage() {
+        return undefined;
+      },
+      getSystemPrompt() {
+        return "";
+      },
+      hasPendingMessages() {
+        return false;
+      },
+      isIdle() {
+        return true;
+      },
+      sessionManager: {
+        buildSessionContext() {
+          return { messages: [], thinkingLevel: currentThinking, model: null };
+        },
+      },
+      shutdown() {},
+      ui: {
+        notify() {},
+        setStatus() {},
+        theme: {
+          fg(_token, value) {
+            return value;
+          },
+          bg(_token, value) {
+            return value;
+          },
+          bold(value) {
+            return value;
+          },
+        },
+      },
+    });
+
+    const agentStart = handlers.get("agent_start");
+    const turnStart = handlers.get("turn_start");
+    const agentEnd = handlers.get("agent_end");
+    assert.equal(typeof agentStart, "function");
+    assert.equal(typeof turnStart, "function");
+    assert.equal(typeof agentEnd, "function");
+    assert.equal(scheduled.length, 1);
+
+    await agentStart({});
+    await turnStart({ turnIndex: 9 });
+    scheduled[0].fn();
+    assert.equal(currentThinking, "xhigh");
+
+    await agentEnd({});
+    assert.equal(currentThinking, "medium");
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+  }
+});
+
+test("inline task --thinking restores on agent_end if turn lifecycle events never arrive", async () => {
+  const commands = new Map();
+  const handlers = new Map();
+  let currentThinking = "medium";
+
+  registerCodexExtension({
+    registerCommand(name, options) {
+      commands.set(name, options);
+    },
+    on(name, handler) {
+      handlers.set(name, handler);
+    },
+    registerMessageRenderer() {},
+    sendMessage() {},
+    sendUserMessage() {},
+    getActiveTools() {
+      return ["read", "grep", "find", "ls"];
+    },
+    getAllTools() {
+      return [];
+    },
+    getThinkingLevel() {
+      return currentThinking;
+    },
+    setThinkingLevel(level) {
+      currentThinking = level;
+    },
+    events: {
+      emit() {},
+    },
+  });
+
+  const taskCommand = commands.get("codex:task");
+  assert.equal(typeof taskCommand?.handler, "function");
+
+  await taskCommand.handler("--readonly --thinking xhigh diagnose auth refresh", {
+    cwd: process.cwd(),
+    hasUI: false,
+    model: undefined,
+    modelRegistry: {},
+    signal: undefined,
+    abort() {},
+    compact() {},
+    getContextUsage() {
+      return undefined;
+    },
+    getSystemPrompt() {
+      return "";
+    },
+    hasPendingMessages() {
+      return false;
+    },
+    isIdle() {
+      return true;
+    },
+    sessionManager: {
+      buildSessionContext() {
+        return { messages: [], thinkingLevel: currentThinking, model: null };
+      },
+    },
+    shutdown() {},
+    ui: {
+      notify() {},
+      setStatus() {},
+      theme: {
+        fg(_token, value) {
+          return value;
+        },
+        bg(_token, value) {
+          return value;
+        },
+        bold(value) {
+          return value;
+        },
+      },
+    },
+  });
+
+  const agentEnd = handlers.get("agent_end");
+  assert.equal(typeof agentEnd, "function");
+  assert.equal(currentThinking, "xhigh");
+
+  await agentEnd({});
+  assert.equal(currentThinking, "medium");
+});
+
+test("inline task --thinking rejects a second override while the first inline override is still pending", async () => {
+  const commands = new Map();
+  const reports = [];
+  let currentThinking = "medium";
+
+  registerCodexExtension({
+    registerCommand(name, options) {
+      commands.set(name, options);
+    },
+    on() {},
+    registerMessageRenderer() {},
+    sendMessage(message, options) {
+      reports.push({ message, options });
+    },
+    sendUserMessage() {},
+    getActiveTools() {
+      return ["read", "grep", "find", "ls"];
+    },
+    getAllTools() {
+      return [];
+    },
+    getThinkingLevel() {
+      return currentThinking;
+    },
+    setThinkingLevel(level) {
+      currentThinking = level;
+    },
+    events: {
+      emit() {},
+    },
+  });
+
+  const taskCommand = commands.get("codex:task");
+  assert.equal(typeof taskCommand?.handler, "function");
+
+  const commandContext = {
+    cwd: process.cwd(),
+    hasUI: false,
+    model: undefined,
+    modelRegistry: {},
+    signal: undefined,
+    abort() {},
+    compact() {},
+    getContextUsage() {
+      return undefined;
+    },
+    getSystemPrompt() {
+      return "";
+    },
+    hasPendingMessages() {
+      return false;
+    },
+    isIdle() {
+      return true;
+    },
+    sessionManager: {
+      buildSessionContext() {
+        return { messages: [], thinkingLevel: currentThinking, model: null };
+      },
+    },
+    shutdown() {},
+    ui: {
+      notify() {},
+      setStatus() {},
+      theme: {
+        fg(_token, value) {
+          return value;
+        },
+        bg(_token, value) {
+          return value;
+        },
+        bold(value) {
+          return value;
+        },
+      },
+    },
+  };
+
+  await taskCommand.handler("--readonly --thinking xhigh first task", commandContext);
+  assert.equal(currentThinking, "xhigh");
+
+  await taskCommand.handler("--readonly --thinking high second task", commandContext);
+  assert.equal(currentThinking, "xhigh");
+  assert.match(String(reports.at(-1)?.message?.content ?? ""), /Another inline `\/codex:task --thinking/i);
+});
+
+test("inline research --thinking is rejected while another turn is already running", async () => {
+  const commands = new Map();
+  const reports = [];
+  let currentThinking = "medium";
+
+  registerCodexExtension({
+    registerCommand(name, options) {
+      commands.set(name, options);
+    },
+    on() {},
+    registerMessageRenderer() {},
+    sendMessage(message, options) {
+      reports.push({ message, options });
+    },
+    sendUserMessage() {
+      throw new Error("sendUserMessage should not be called when inline thinking is rejected");
+    },
+    getActiveTools() {
+      return ["read", "grep", "find", "ls"];
+    },
+    getAllTools() {
+      return [];
+    },
+    getThinkingLevel() {
+      return currentThinking;
+    },
+    setThinkingLevel(level) {
+      currentThinking = level;
+    },
+    events: {
+      emit() {},
+    },
+  });
+
+  const researchCommand = commands.get("codex:research");
+  assert.equal(typeof researchCommand?.handler, "function");
+
+  await researchCommand.handler("--thinking high inspect the repo", {
+    cwd: process.cwd(),
+    hasUI: false,
+    model: undefined,
+    modelRegistry: {},
+    signal: undefined,
+    abort() {},
+    compact() {},
+    getContextUsage() {
+      return undefined;
+    },
+    getSystemPrompt() {
+      return "";
+    },
+    hasPendingMessages() {
+      return true;
+    },
+    isIdle() {
+      return false;
+    },
+    sessionManager: {
+      buildSessionContext() {
+        return { messages: [], thinkingLevel: currentThinking, model: null };
+      },
+    },
+    shutdown() {},
+    ui: {
+      notify() {},
+      setStatus() {},
+      theme: {
+        fg(_token, value) {
+          return value;
+        },
+        bg(_token, value) {
+          return value;
+        },
+        bold(value) {
+          return value;
+        },
+      },
+    },
+  });
+
+  assert.equal(currentThinking, "medium");
+  assert.match(String(reports.at(-1)?.message?.content ?? ""), /only works when the agent is idle/i);
 });
 
 test("input fallback routes /codex:result directly when normal slash dispatch misses", async () => {
@@ -1136,6 +1882,10 @@ test("print-mode task fallback cleans up stale waiters after an error", async ()
         getAllTools() {
           return [];
         },
+        getThinkingLevel() {
+          return "medium";
+        },
+        setThinkingLevel() {},
         events: {
           emit() {},
         },

@@ -38,6 +38,7 @@ export interface StoredReviewRun {
   targetBaseRef?: string;
   modelProvider: string;
   modelId: string;
+  thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
   focusText?: string;
   result: StructuredReviewResult | null;
   parseError: string | null;

@@ -38,6 +38,7 @@ import { findProtectedPathInBashCommand, findProtectedPathMatch } from "../../sr
 import { buildInspectionRetryGuidance, buildResearchPrompt, buildTaskPrompt, inspectResearchTools } from "../../src/runtime/session-prompts.js";
 import { executeReviewRun, type ReviewCommandOptions } from "../../src/review/review-runner.js";
 import { findStoredReview, listStoredReviews, storedReviewSortKey } from "../../src/runtime/review-store.js";
+import { CODEX_THINKING_LEVELS, parseCodexThinkingLevel, type CodexThinkingLevel } from "../../src/runtime/thinking.js";
 import {
   renderConfigMarkdown,
   renderResearchQueuedMarkdown,
@@ -86,6 +87,15 @@ function createInjectedTurnWaiter() {
 }
 
 type InjectedTurnWaiter = ReturnType<typeof createInjectedTurnWaiter>;
+type PendingThinkingRestore = {
+  previousLevel: CodexThinkingLevel;
+  effectiveLevel: CodexThinkingLevel;
+  assignedTurnIndex?: number;
+  timeoutId?: ReturnType<typeof setTimeout>;
+};
+type PendingThinkingRestoreState = { current: PendingThinkingRestore | null };
+type AgentLifecycleState = { running: boolean };
+const INLINE_THINKING_RESTORE_TIMEOUT_MS = 15 * 60 * 1000;
 
 function parseSlashInput(text: string): { name: string; args: string } | null {
   const trimmed = text.trim();
@@ -131,7 +141,7 @@ function buildLegacyPromptAliasGuidance(name: string, args: string): { title: st
 
 function parseReviewCommandOptions(rawArgs: string): ReviewCommandOptions {
   const tokens = splitShellLikeArgs(rawArgs);
-  const { optionTokens, remainderTokens } = splitLeadingOptionTokens(tokens, ["--scope", "--base", "--model"]);
+  const { optionTokens, remainderTokens } = splitLeadingOptionTokens(tokens, ["--scope", "--base", "--model", "--thinking"]);
   const options: ReviewCommandOptions = {};
   const focus: string[] = [...remainderTokens];
 
@@ -171,6 +181,11 @@ function parseReviewCommandOptions(rawArgs: string): ReviewCommandOptions {
       index += 1;
       continue;
     }
+    if (token === "--thinking") {
+      options.thinkingLevel = parseCodexThinkingLevel(optionTokens[index + 1]);
+      index += 1;
+      continue;
+    }
     focus.push(...optionTokens.slice(index));
     break;
   }
@@ -183,12 +198,15 @@ function parseReviewCommandOptions(rawArgs: string): ReviewCommandOptions {
   return options;
 }
 
-function parseResearchCommandOptions(rawArgs: string): { background: boolean; modelSpec?: string; request: string } {
+function parseResearchCommandOptions(
+  rawArgs: string,
+): { background: boolean; modelSpec?: string; thinkingLevel?: CodexThinkingLevel; request: string } {
   const tokens = splitShellLikeArgs(rawArgs);
-  const { optionTokens, remainderTokens } = splitLeadingOptionTokens(tokens, ["--model"]);
+  const { optionTokens, remainderTokens } = splitLeadingOptionTokens(tokens, ["--model", "--thinking"]);
   const request: string[] = [...remainderTokens];
   let background = false;
   let modelSpec: string | undefined;
+  let thinkingLevel: CodexThinkingLevel | undefined;
 
   for (let index = 0; index < optionTokens.length; index += 1) {
     const token = optionTokens[index];
@@ -208,6 +226,11 @@ function parseResearchCommandOptions(rawArgs: string): { background: boolean; mo
       index += 1;
       continue;
     }
+    if (token === "--thinking") {
+      thinkingLevel = parseCodexThinkingLevel(optionTokens[index + 1]);
+      index += 1;
+      continue;
+    }
     request.push(...optionTokens.slice(index));
     break;
   }
@@ -215,8 +238,91 @@ function parseResearchCommandOptions(rawArgs: string): { background: boolean; mo
   return {
     background,
     modelSpec,
+    thinkingLevel,
     request: request.join(" ").trim(),
   };
+}
+
+function prepareInlineThinkingOverride(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  requestedLevel: CodexThinkingLevel | undefined,
+  pendingThinkingRestore: PendingThinkingRestoreState,
+  agentLifecycle: AgentLifecycleState,
+  commandName: "task" | "research",
+): { effectiveLevel?: CodexThinkingLevel; restoreQueued: boolean } {
+  if (!requestedLevel) {
+    return { effectiveLevel: undefined, restoreQueued: false };
+  }
+  if (pendingThinkingRestore.current) {
+    throw new Error(
+      `Another inline \`/codex:${commandName} --thinking ...\` turn is still pending. Wait for it to finish or use \`--background\`.`,
+    );
+  }
+  if (!ctx.isIdle()) {
+    throw new Error(
+      `Inline \`/codex:${commandName} --thinking ...\` only works when the agent is idle. Wait for the current turn to finish or use \`--background\`.`,
+    );
+  }
+
+  const previousLevel = pi.getThinkingLevel();
+  pi.setThinkingLevel(requestedLevel);
+  const effectiveLevel = pi.getThinkingLevel();
+
+  if (effectiveLevel !== previousLevel) {
+    const restore: PendingThinkingRestore = { previousLevel, effectiveLevel };
+    const timeoutId = setTimeout(() => {
+      if (pendingThinkingRestore.current !== restore) {
+        return;
+      }
+      if (agentLifecycle.running && restore.assignedTurnIndex != null) {
+        return;
+      }
+      pendingThinkingRestore.current = null;
+      if (pi.getThinkingLevel() === restore.effectiveLevel) {
+        pi.setThinkingLevel(previousLevel);
+      }
+    }, INLINE_THINKING_RESTORE_TIMEOUT_MS);
+    timeoutId.unref?.();
+    restore.timeoutId = timeoutId;
+    pendingThinkingRestore.current = restore;
+    return { effectiveLevel, restoreQueued: true };
+  }
+
+  return { effectiveLevel, restoreQueued: false };
+}
+
+function takePendingThinkingRestore(
+  pendingThinkingRestore: PendingThinkingRestoreState,
+  previousLevel?: CodexThinkingLevel,
+): PendingThinkingRestore | null {
+  if (!pendingThinkingRestore.current) {
+    return null;
+  }
+  if (previousLevel && pendingThinkingRestore.current.previousLevel !== previousLevel) {
+    return null;
+  }
+  const restore = pendingThinkingRestore.current;
+  if (restore.timeoutId) {
+    clearTimeout(restore.timeoutId);
+  }
+  pendingThinkingRestore.current = null;
+  return restore;
+}
+
+function restorePendingThinkingLevel(
+  pi: ExtensionAPI,
+  pendingThinkingRestore: PendingThinkingRestoreState,
+  previousLevel?: CodexThinkingLevel,
+): boolean {
+  const restore = takePendingThinkingRestore(pendingThinkingRestore, previousLevel);
+  if (!restore) {
+    return false;
+  }
+  if (pi.getThinkingLevel() === restore.effectiveLevel) {
+    pi.setThinkingLevel(restore.previousLevel);
+  }
+  return true;
 }
 
 async function handleReviewCommand(
@@ -227,6 +333,9 @@ async function handleReviewCommand(
 ): Promise<void> {
   const settings = loadCodexSettings(ctx.cwd);
   const options = parseReviewCommandOptions(rawArgs);
+  if (!options.thinkingLevel) {
+    options.thinkingLevel = pi.getThinkingLevel();
+  }
   if (kind === "review" && options.focusText) {
     throw new Error(
       `\`/codex:review\` stays non-steerable. Retry with \`/codex:adversarial-review ${options.focusText}\` for focused review instructions.`,
@@ -251,7 +360,13 @@ async function handleReviewCommand(
   );
 }
 
-async function handleTaskCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext, rawArgs: string): Promise<boolean> {
+async function handleTaskCommand(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  rawArgs: string,
+  pendingThinkingRestore: PendingThinkingRestoreState,
+  agentLifecycle: AgentLifecycleState,
+): Promise<boolean> {
   const settings = loadCodexSettings(ctx.cwd);
   if (!settings.enableTaskCommand) {
     sendReport(pi, "Codex Task", "# Codex Task\n\nThe task command is disabled in the current Codex settings.\n", "warning");
@@ -267,8 +382,8 @@ async function handleTaskCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext,
 
   if (options.background) {
     const job = options.profile === "readonly"
-      ? await launchBackgroundReadonlyTaskJob(pi, ctx, settings, request, options.modelSpec)
-      : await launchBackgroundWriteTaskJob(pi, ctx, settings, request, options.modelSpec);
+      ? await launchBackgroundReadonlyTaskJob(pi, ctx, settings, request, options.modelSpec, options.thinkingLevel)
+      : await launchBackgroundWriteTaskJob(pi, ctx, settings, request, options.modelSpec, options.thinkingLevel);
     sendReport(
       pi,
       "Codex Task Job",
@@ -279,26 +394,42 @@ async function handleTaskCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext,
   }
 
   const deliverAs = ctx.isIdle() ? undefined : "followUp";
-  pi.sendUserMessage(
-    buildTaskPrompt(request, pi.getActiveTools(), {
-      readOnly: options.profile === "readonly",
-      activeWebTools: inspectResearchTools(pi).activeWebTools,
-    }),
-    deliverAs ? { deliverAs } : undefined,
-  );
+  const previousThinkingLevel = pi.getThinkingLevel();
+  const inlineThinking = prepareInlineThinkingOverride(pi, ctx, options.thinkingLevel, pendingThinkingRestore, agentLifecycle, "task");
+  try {
+    pi.sendUserMessage(
+      buildTaskPrompt(request, pi.getActiveTools(), {
+        readOnly: options.profile === "readonly",
+        activeWebTools: inspectResearchTools(pi).activeWebTools,
+      }),
+      deliverAs ? { deliverAs } : undefined,
+    );
+  } catch (error) {
+    if (inlineThinking.restoreQueued) {
+      restorePendingThinkingLevel(pi, pendingThinkingRestore, previousThinkingLevel);
+    }
+    throw error;
+  }
   sendReport(
     pi,
     "Codex Task",
     renderTaskQueuedMarkdown(request, deliverAs === "followUp", {
       readOnly: options.profile === "readonly",
       ignoredModelSpec: options.modelSpec,
+      appliedThinkingLevel: options.thinkingLevel ? inlineThinking.effectiveLevel : undefined,
     }),
     "info",
   );
   return true;
 }
 
-async function handleResearchCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext, rawArgs: string): Promise<boolean> {
+async function handleResearchCommand(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  rawArgs: string,
+  pendingThinkingRestore: PendingThinkingRestoreState,
+  agentLifecycle: AgentLifecycleState,
+): Promise<boolean> {
   const settings = loadCodexSettings(ctx.cwd);
   if (!settings.enableResearchCommand) {
     sendReport(pi, "Codex Research", "# Codex Research\n\nThe research command is disabled in the current Codex settings.\n", "warning");
@@ -318,15 +449,29 @@ async function handleResearchCommand(pi: ExtensionAPI, ctx: ExtensionCommandCont
   }
 
   if (options.background) {
-    const job = await launchBackgroundResearchJob(pi, ctx, settings, request, options.modelSpec);
+    const job = await launchBackgroundResearchJob(pi, ctx, settings, request, options.modelSpec, options.thinkingLevel);
     sendReport(pi, "Codex Research Job", renderBackgroundJobLaunchMarkdown(job), "info");
     return false;
   }
 
   const snapshot = inspectResearchTools(pi);
   const deliverAs = ctx.isIdle() ? undefined : "followUp";
-  pi.sendUserMessage(buildResearchPrompt(request, snapshot), deliverAs ? { deliverAs } : undefined);
-  sendReport(pi, "Codex Research", renderResearchQueuedMarkdown(request, deliverAs === "followUp", snapshot), "info");
+  const previousThinkingLevel = pi.getThinkingLevel();
+  const inlineThinking = prepareInlineThinkingOverride(pi, ctx, options.thinkingLevel, pendingThinkingRestore, agentLifecycle, "research");
+  try {
+    pi.sendUserMessage(buildResearchPrompt(request, snapshot), deliverAs ? { deliverAs } : undefined);
+  } catch (error) {
+    if (inlineThinking.restoreQueued) {
+      restorePendingThinkingLevel(pi, pendingThinkingRestore, previousThinkingLevel);
+    }
+    throw error;
+  }
+  sendReport(
+    pi,
+    "Codex Research",
+    renderResearchQueuedMarkdown(request, deliverAs === "followUp", snapshot, options.thinkingLevel ? inlineThinking.effectiveLevel : undefined),
+    "info",
+  );
   return true;
 }
 
@@ -335,6 +480,8 @@ async function runTaskCommandWithWaiter(
   ctx: ExtensionCommandContext,
   args: string,
   pendingInjectedTurnWaiters: InjectedTurnWaiter[],
+  pendingThinkingRestore: PendingThinkingRestoreState,
+  agentLifecycle: AgentLifecycleState,
 ): Promise<void> {
   const waiter = IS_PRINT_MODE ? createInjectedTurnWaiter() : null;
   if (waiter) {
@@ -342,7 +489,7 @@ async function runTaskCommandWithWaiter(
   }
 
   try {
-    const injected = await handleTaskCommand(pi, ctx, args);
+    const injected = await handleTaskCommand(pi, ctx, args, pendingThinkingRestore, agentLifecycle);
     if (waiter && injected) {
       await waiter.promise;
     }
@@ -362,6 +509,8 @@ async function runResearchCommandWithWaiter(
   ctx: ExtensionCommandContext,
   args: string,
   pendingInjectedTurnWaiters: InjectedTurnWaiter[],
+  pendingThinkingRestore: PendingThinkingRestoreState,
+  agentLifecycle: AgentLifecycleState,
 ): Promise<void> {
   const waiter = IS_PRINT_MODE ? createInjectedTurnWaiter() : null;
   if (waiter) {
@@ -369,7 +518,7 @@ async function runResearchCommandWithWaiter(
   }
 
   try {
-    const injected = await handleResearchCommand(pi, ctx, args);
+    const injected = await handleResearchCommand(pi, ctx, args, pendingThinkingRestore, agentLifecycle);
     if (waiter && injected) {
       await waiter.promise;
     }
@@ -390,6 +539,8 @@ async function dispatchCodexCommandByName(
   name: string,
   args: string,
   pendingInjectedTurnWaiters: InjectedTurnWaiter[],
+  pendingThinkingRestore: PendingThinkingRestoreState,
+  agentLifecycle: AgentLifecycleState,
 ): Promise<boolean> {
   switch (name) {
     case "codex:review":
@@ -399,10 +550,10 @@ async function dispatchCodexCommandByName(
       await handleReviewCommand(pi, ctx, "adversarial-review", args);
       return true;
     case "codex:task":
-      await runTaskCommandWithWaiter(pi, ctx, args, pendingInjectedTurnWaiters);
+      await runTaskCommandWithWaiter(pi, ctx, args, pendingInjectedTurnWaiters, pendingThinkingRestore, agentLifecycle);
       return true;
     case "codex:research":
-      await runResearchCommandWithWaiter(pi, ctx, args, pendingInjectedTurnWaiters);
+      await runResearchCommandWithWaiter(pi, ctx, args, pendingInjectedTurnWaiters, pendingThinkingRestore, agentLifecycle);
       return true;
     case "codex:status":
     case "codex-status":
@@ -609,7 +760,7 @@ async function handleApplyCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext
 async function handleConfigCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
   const settings = loadCodexSettings(ctx.cwd);
   const currentModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null;
-  sendReport(pi, "Codex Config", renderConfigMarkdown(settings, currentModel), "info");
+  sendReport(pi, "Codex Config", renderConfigMarkdown(settings, currentModel, pi.getThinkingLevel()), "info");
 }
 
 type ArgumentCompletionProvider = (argumentPrefix: string) => AutocompleteItem[] | null;
@@ -619,6 +770,20 @@ type FlagCompletionSpec = {
   description: string;
   values?: Array<{ value: string; description: string }>;
 };
+
+function thinkingFlagCompletionSpec(description: string): FlagCompletionSpec {
+  return {
+    flag: "--thinking",
+    description,
+    values: CODEX_THINKING_LEVELS.map((value) => ({
+      value,
+      description:
+        value === "off"
+          ? "Disable extended reasoning for this run."
+          : `Use ${value} effort for this run.`,
+    })),
+  };
+}
 
 function buildFlagArgumentCompletions(argumentPrefix: string, specs: FlagCompletionSpec[]): AutocompleteItem[] | null {
   const prefix = argumentPrefix;
@@ -721,6 +886,7 @@ function reviewArgumentCompletions(argumentPrefix: string): AutocompleteItem[] |
       description: "Override the provider/model used for this review run.",
       values: [{ value: "openai-codex/gpt-5.3-codex", description: "Use the current Codex default model." }],
     },
+    thinkingFlagCompletionSpec("Override the reasoning effort used for this review run."),
   ]);
 }
 
@@ -743,6 +909,7 @@ function taskArgumentCompletions(argumentPrefix: string): AutocompleteItem[] | n
       description: "Override the provider/model used for this task run.",
       values: [{ value: "openai-codex/gpt-5.3-codex", description: "Use the current Codex default model." }],
     },
+    thinkingFlagCompletionSpec("Override the reasoning effort used for this task run."),
   ]);
 }
 
@@ -757,6 +924,7 @@ function researchArgumentCompletions(argumentPrefix: string): AutocompleteItem[]
       description: "Override the provider/model used for this research run.",
       values: [{ value: "openai-codex/gpt-5.3-codex", description: "Use the current Codex default model." }],
     },
+    thinkingFlagCompletionSpec("Override the reasoning effort used for this research run."),
   ]);
 }
 
@@ -856,6 +1024,8 @@ function registerSingleCommand(
 
 export default function registerCodexExtension(pi: ExtensionAPI): void {
   let pendingInjectedTurnWaiters: InjectedTurnWaiter[] = [];
+  const pendingThinkingRestore: PendingThinkingRestoreState = { current: null };
+  const agentLifecycle: AgentLifecycleState = { running: false };
 
   registerCodexSettings(pi);
 
@@ -886,6 +1056,8 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
         slash.name,
         slash.args,
         pendingInjectedTurnWaiters,
+        pendingThinkingRestore,
+        agentLifecycle,
       );
       return handled ? ({ action: "handled" } as const) : ({ action: "continue" } as const);
     } catch (error) {
@@ -915,13 +1087,37 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
     ctx.ui.setStatus("pi-codex", theme.fg("dim", "Codex review ready"));
   });
 
-  pi.on("turn_end", async () => {
-    if (pendingInjectedTurnWaiters.length === 0) {
-      return;
-    }
+  pi.on("agent_start", async () => {
+    agentLifecycle.running = true;
+  });
 
+  pi.on("turn_start", async (event) => {
+    if (pendingThinkingRestore.current && pendingThinkingRestore.current.assignedTurnIndex == null && event?.turnIndex != null) {
+      pendingThinkingRestore.current.assignedTurnIndex = event.turnIndex;
+    }
+  });
+
+  pi.on("turn_end", async (event) => {
     const waiter = pendingInjectedTurnWaiters.shift();
     waiter?.resolve();
+    const restore = pendingThinkingRestore.current;
+    if (!restore) {
+      return;
+    }
+    if (restore.assignedTurnIndex != null && event?.turnIndex != null && restore.assignedTurnIndex !== event.turnIndex) {
+      return;
+    }
+    restorePendingThinkingLevel(pi, pendingThinkingRestore);
+  });
+
+  pi.on("agent_end", async () => {
+    agentLifecycle.running = false;
+    restorePendingThinkingLevel(pi, pendingThinkingRestore);
+  });
+
+  pi.on("session_shutdown", async () => {
+    agentLifecycle.running = false;
+    restorePendingThinkingLevel(pi, pendingThinkingRestore);
   });
 
   pi.on("tool_call", async (event, ctx) => {
@@ -1011,36 +1207,36 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
   registerSingleCommand(
     pi,
     "codex:review",
-    "Run a structured Codex review [--background] [--scope working-tree|branch] [--base <ref>] [--model <provider/model>]",
+    "Run a structured Codex review [--background] [--scope working-tree|branch] [--base <ref>] [--model <provider/model>] [--thinking <level>]",
     async (args, ctx) => {
-    await handleReviewCommand(pi, ctx, "review", args);
+      await handleReviewCommand(pi, ctx, "review", args);
     },
     reviewArgumentCompletions,
   );
   registerSingleCommand(
     pi,
     "codex:adversarial-review",
-    "Run an adversarial Codex review [--background] [--scope working-tree|branch] [--base <ref>] [--model <provider/model>]",
+    "Run an adversarial Codex review [--background] [--scope working-tree|branch] [--base <ref>] [--model <provider/model>] [--thinking <level>]",
     async (args, ctx) => {
-    await handleReviewCommand(pi, ctx, "adversarial-review", args);
+      await handleReviewCommand(pi, ctx, "adversarial-review", args);
     },
     reviewArgumentCompletions,
   );
   registerSingleCommand(
     pi,
     "codex:task",
-    "Run a Codex-style task [--readonly|--write] [--background] [--model <provider/model>]",
+    "Run a Codex-style task [--readonly|--write] [--background] [--model <provider/model>] [--thinking <level>]",
     async (args, ctx) => {
-    await runTaskCommandWithWaiter(pi, ctx, args, pendingInjectedTurnWaiters);
+      await runTaskCommandWithWaiter(pi, ctx, args, pendingInjectedTurnWaiters, pendingThinkingRestore, agentLifecycle);
     },
     taskArgumentCompletions,
   );
   registerSingleCommand(
     pi,
     "codex:research",
-    "Run Codex-style research [--background] [--model <provider/model>]",
+    "Run Codex-style research [--background] [--model <provider/model>] [--thinking <level>]",
     async (args, ctx) => {
-    await runResearchCommandWithWaiter(pi, ctx, args, pendingInjectedTurnWaiters);
+      await runResearchCommandWithWaiter(pi, ctx, args, pendingInjectedTurnWaiters, pendingThinkingRestore, agentLifecycle);
     },
     researchArgumentCompletions,
   );

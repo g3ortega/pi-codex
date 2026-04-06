@@ -1,4 +1,5 @@
 import { splitLeadingOptionTokens, splitShellLikeArgs } from "./arg-parser.js";
+import { parseCodexThinkingLevel, type CodexThinkingLevel } from "./thinking.js";
 
 export type TaskExecutionProfile = "write" | "readonly";
 
@@ -6,16 +7,18 @@ export type TaskCommandOptions = {
   background: boolean;
   profile: TaskExecutionProfile;
   modelSpec?: string;
+  thinkingLevel?: CodexThinkingLevel;
   request: string;
 };
 
 export function parseTaskCommandOptions(rawArgs: string): TaskCommandOptions {
   const tokens = splitShellLikeArgs(rawArgs);
-  const { optionTokens, remainderTokens } = splitLeadingOptionTokens(tokens, ["--model"]);
+  const { optionTokens, remainderTokens } = splitLeadingOptionTokens(tokens, ["--model", "--thinking"]);
   const request: string[] = [...remainderTokens];
   let background = false;
   let profile: TaskExecutionProfile = "write";
   let modelSpec: string | undefined;
+  let thinkingLevel: CodexThinkingLevel | undefined;
 
   for (let index = 0; index < optionTokens.length; index += 1) {
     const token = optionTokens[index];
@@ -46,6 +49,11 @@ export function parseTaskCommandOptions(rawArgs: string): TaskCommandOptions {
       index += 1;
       continue;
     }
+    if (token === "--thinking") {
+      thinkingLevel = parseCodexThinkingLevel(optionTokens[index + 1]);
+      index += 1;
+      continue;
+    }
 
     request.push(...optionTokens.slice(index));
     break;
@@ -55,6 +63,7 @@ export function parseTaskCommandOptions(rawArgs: string): TaskCommandOptions {
     background,
     profile,
     modelSpec,
+    thinkingLevel,
     request: request.join(" ").trim(),
   };
 }

@@ -55,6 +55,7 @@ export function renderStoredReviewMarkdown(
     `- Branch: ${run.branch}`,
     `- Target: ${run.targetLabel}`,
     `- Model: ${run.modelProvider}/${run.modelId}`,
+    `- Thinking: ${run.thinkingLevel ?? "off"}`,
     `- Created: ${run.createdAt}`,
   ];
   if (run.completedAt && run.completedAt !== run.createdAt) {
@@ -140,7 +141,7 @@ export function renderReviewStatusMarkdown(runs: StoredReviewRun[]): string {
 export function renderTaskQueuedMarkdown(
   request: string,
   queued: boolean,
-  options: { readOnly?: boolean; ignoredModelSpec?: string } = {},
+  options: { readOnly?: boolean; ignoredModelSpec?: string; appliedThinkingLevel?: string } = {},
 ): string {
   const lines = [
     "# Codex Task",
@@ -164,6 +165,14 @@ export function renderTaskQueuedMarkdown(
         `\`${options.ignoredModelSpec}\` was treated as a host-side flag and not forwarded into the task text. Inline \`/codex:task\` still uses the current PI session model.`,
       ]
       : []),
+    ...(options.appliedThinkingLevel
+      ? [
+        "",
+        "Thinking override:",
+        "",
+        `This inline task will use the current PI session with a temporary thinking level of \`${options.appliedThinkingLevel}\` for the injected turn only.`,
+      ]
+      : []),
     "",
     "Request:",
     "",
@@ -173,7 +182,12 @@ export function renderTaskQueuedMarkdown(
   return `${lines.join("\n").trimEnd()}\n`;
 }
 
-export function renderResearchQueuedMarkdown(request: string, queued: boolean, snapshot: ResearchToolSnapshot): string {
+export function renderResearchQueuedMarkdown(
+  request: string,
+  queued: boolean,
+  snapshot: ResearchToolSnapshot,
+  appliedThinkingLevel?: string,
+): string {
   const lines = [
     "# Codex Research",
     "",
@@ -190,6 +204,10 @@ export function renderResearchQueuedMarkdown(request: string, queued: boolean, s
     `- Local evidence: ${snapshot.activeLocalEvidenceTools.length > 0 ? snapshot.activeLocalEvidenceTools.join(", ") : "none"}`,
   ];
 
+  if (appliedThinkingLevel) {
+    lines.push("", "Thinking override:", `- Temporary inline thinking level: ${appliedThinkingLevel}`);
+  }
+
   if (snapshot.inactiveAvailableWebTools.length > 0) {
     lines.push(`- Installed but inactive web tools: ${snapshot.inactiveAvailableWebTools.join(", ")}`);
     lines.push("", "Enable them with `/tools` if you want live web-grounded research in this session.");
@@ -198,11 +216,16 @@ export function renderResearchQueuedMarkdown(request: string, queued: boolean, s
   return `${lines.join("\n").trimEnd()}\n`;
 }
 
-export function renderConfigMarkdown(settings: CodexSettings, currentModelLabel: string | null): string {
+export function renderConfigMarkdown(
+  settings: CodexSettings,
+  currentModelLabel: string | null,
+  currentThinkingLevel?: string | null,
+): string {
   const lines = [
     "# Codex Config",
     "",
     `- Current session model: ${currentModelLabel ?? "none"}`,
+    `- Current session thinking: ${currentThinkingLevel ?? "n/a"}`,
     `- Default review scope: ${settings.defaultReviewScope}`,
     `- Default review model: ${settings.defaultReviewModel ?? "(use current session model)"}`,
     `- Review history limit: ${settings.reviewHistoryLimit}`,

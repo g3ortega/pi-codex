@@ -45,6 +45,7 @@ import type {
   TaskJobResultPayload,
   TaskSnapshot,
 } from "../runtime/job-types.js";
+import { resolveEffectiveThinkingLevel, type CodexThinkingLevel } from "../runtime/thinking.js";
 
 const INTERNAL_TASK_JOB_COMMAND = "codex:internal-run-task-job";
 const CURRENT_EXTENSION_PATH = fileURLToPath(new URL("../../extensions/core/index.ts", import.meta.url));
@@ -177,6 +178,7 @@ function buildTaskJob(
   request: string,
   profile: CodexTaskExecutionProfile,
   explicitModel?: string,
+  explicitThinkingLevel?: CodexThinkingLevel,
 ): { job: TaskBackgroundJob; snapshot: TaskSnapshot } {
   const sessionIdentity = resolveSessionIdentity(ctx);
   const repoRoot = safeRepoRoot(ctx.cwd);
@@ -186,7 +188,10 @@ function buildTaskJob(
   const id = generateJobId("task");
   const createdAt = nowIso();
   const sessionDir = getJobSessionDir(repoRoot, id);
-  const thinkingLevel = typeof pi.getThinkingLevel === "function" ? pi.getThinkingLevel() : undefined;
+  const thinkingLevel = resolveEffectiveThinkingLevel(
+    model,
+    explicitThinkingLevel ?? (typeof pi.getThinkingLevel === "function" ? pi.getThinkingLevel() : undefined),
+  );
   const worktree = profile === "write" ? createTaskWorktree(ctx.cwd, id) : null;
 
   const snapshot: TaskSnapshot = {
@@ -258,10 +263,11 @@ async function launchBackgroundTaskJob(
   request: string,
   profile: CodexTaskExecutionProfile,
   explicitModel?: string,
+  explicitThinkingLevel?: CodexThinkingLevel,
 ): Promise<TaskBackgroundJob> {
   const model = resolveModel(ctx, settings, explicitModel);
   await requireModelAuth(ctx, model);
-  const { job, snapshot } = buildTaskJob(pi, ctx, settings, request, profile, explicitModel);
+  const { job, snapshot } = buildTaskJob(pi, ctx, settings, request, profile, explicitModel, explicitThinkingLevel);
   createTaskBackgroundJob(job, snapshot);
   appendJobLog(job.workspaceRoot, job.id, `Queued background ${profile} task job.`);
 
@@ -289,8 +295,9 @@ export async function launchBackgroundReadonlyTaskJob(
   settings: CodexSettings,
   request: string,
   explicitModel?: string,
+  explicitThinkingLevel?: CodexThinkingLevel,
 ): Promise<TaskBackgroundJob> {
-  return launchBackgroundTaskJob(pi, ctx, settings, request, "readonly", explicitModel);
+  return launchBackgroundTaskJob(pi, ctx, settings, request, "readonly", explicitModel, explicitThinkingLevel);
 }
 
 export async function launchBackgroundWriteTaskJob(
@@ -299,8 +306,9 @@ export async function launchBackgroundWriteTaskJob(
   settings: CodexSettings,
   request: string,
   explicitModel?: string,
+  explicitThinkingLevel?: CodexThinkingLevel,
 ): Promise<TaskBackgroundJob> {
-  return launchBackgroundTaskJob(pi, ctx, settings, request, "write", explicitModel);
+  return launchBackgroundTaskJob(pi, ctx, settings, request, "write", explicitModel, explicitThinkingLevel);
 }
 
 function markCancelled(

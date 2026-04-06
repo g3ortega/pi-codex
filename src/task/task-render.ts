@@ -15,6 +15,7 @@ export function renderStoredTaskMarkdown(job: TaskBackgroundJob, result: TaskJob
     `- Repository: ${job.repoRoot}`,
     `- Branch: ${job.branch}`,
     `- Model: ${job.modelSpec}`,
+    `- Thinking: ${job.thinkingLevel ?? "off"}`,
     `- Created: ${job.createdAt}`,
   ];
 

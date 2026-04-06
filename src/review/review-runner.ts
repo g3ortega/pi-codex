@@ -6,11 +6,17 @@ import type { CodexSettings, ReviewScope } from "../config/codex-settings.js";
 import { collectReviewContext, resolveReviewTarget } from "./git-context.js";
 import { parseStructuredReviewOutput, type StoredReviewRun } from "./review-schema.js";
 import { generateReviewId, storeReviewRun } from "../runtime/review-store.js";
+import {
+  reasoningLevelForCompletion,
+  resolveEffectiveThinkingLevel,
+  type CodexThinkingLevel,
+} from "../runtime/thinking.js";
 
 export interface ReviewCommandOptions {
   scope?: ReviewScope;
   base?: string;
   modelSpec?: string;
+  thinkingLevel?: CodexThinkingLevel;
   focusText?: string;
   background?: boolean;
 }
@@ -25,6 +31,7 @@ export interface PreparedReviewExecutionInput {
   targetBaseRef?: string;
   reviewInput: string;
   modelSpec?: string;
+  thinkingLevel?: CodexThinkingLevel;
   focusText?: string;
 }
 
@@ -244,6 +251,7 @@ async function runModelCompletion(
   model: Model<any>,
   systemPrompt: string,
   prompt: string,
+  thinkingLevel?: CodexThinkingLevel,
   externalSignal?: AbortSignal,
 ): Promise<string> {
   const auth = await requireModelAuth(ctx, model);
@@ -264,6 +272,7 @@ async function runModelCompletion(
       {
         apiKey: auth.apiKey,
         headers: auth.headers,
+        reasoning: reasoningLevelForCompletion(thinkingLevel),
         signal,
       },
     );
@@ -347,8 +356,9 @@ export async function executePreparedReviewRun(
   input: PreparedReviewExecutionInput,
   options: { persist?: boolean; signal?: AbortSignal } = {},
 ): Promise<StoredReviewRun> {
-  const startedAt = new Date().toISOString();
   const model = resolveModel(ctx, settings, input.modelSpec);
+  const effectiveThinkingLevel = resolveEffectiveThinkingLevel(model, input.thinkingLevel);
+  const startedAt = new Date().toISOString();
   const prompt = buildStructuredReviewPrompt(input.kind, input.targetLabel, input.focusText, input.reviewInput);
   const rawOutput = await runModelCompletion(
     ctx,
@@ -356,6 +366,7 @@ export async function executePreparedReviewRun(
     model,
     "You are Codex. Follow the review contract exactly and return only the requested JSON.",
     prompt,
+    effectiveThinkingLevel,
     options.signal,
   );
 
@@ -374,6 +385,7 @@ export async function executePreparedReviewRun(
     targetBaseRef: input.targetBaseRef,
     modelProvider: model.provider,
     modelId: model.id,
+    thinkingLevel: effectiveThinkingLevel,
     focusText: input.focusText?.trim() || undefined,
     result: parsed.parsed,
     parseError: parsed.parseError,
@@ -407,6 +419,7 @@ export async function executeReviewRun(
     targetBaseRef: reviewContext.target.baseRef,
     reviewInput: reviewContext.content,
     modelSpec: options.modelSpec,
+    thinkingLevel: options.thinkingLevel,
     focusText: options.focusText,
   });
 }

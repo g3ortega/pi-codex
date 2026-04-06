@@ -14,6 +14,7 @@ export function renderStoredResearchMarkdown(job: ResearchBackgroundJob, result:
     `- Repository: ${job.repoRoot}`,
     `- Branch: ${job.branch}`,
     `- Model: ${job.modelSpec}`,
+    `- Thinking: ${job.thinkingLevel ?? "off"}`,
     `- Created: ${job.createdAt}`,
   ];
 

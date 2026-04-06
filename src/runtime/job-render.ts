@@ -29,6 +29,7 @@ export function renderBackgroundJobLaunchMarkdown(job: CodexBackgroundJob): stri
     `- Branch: ${job.branch}`,
     `- ${subjectLabel}: ${backgroundJobSubject(job)}`,
     `- Model: ${job.modelSpec}`,
+    `- Thinking: ${job.thinkingLevel ?? "off"}`,
     `- Created: ${job.createdAt}`,
     "",
     job.jobClass === "review"
@@ -82,6 +83,7 @@ export function renderBackgroundJobMarkdown(job: CodexBackgroundJob): string {
     `- Branch: ${job.branch}`,
     `- ${subjectLabel}: ${backgroundJobSubject(job)}`,
     `- Model: ${job.modelSpec}`,
+    `- Thinking: ${job.thinkingLevel ?? "off"}`,
     `- Created: ${job.createdAt}`,
     `- Updated: ${job.updatedAt}`,
   ];
