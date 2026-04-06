@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { getWorkspaceReviewsDir } from "./state-paths.js";
@@ -10,6 +10,11 @@ export function generateReviewId(prefix = "review"): string {
 }
 
 function readRun(filePath: string): StoredReviewRun {
+  try {
+    chmodSync(filePath, 0o600);
+  } catch {
+    // Best effort only.
+  }
   return JSON.parse(readFileSync(filePath, "utf8")) as StoredReviewRun;
 }
 
@@ -57,7 +62,12 @@ export function findStoredReview(cwd: string, reference?: string): StoredReviewR
 export function storeReviewRun(cwd: string, run: StoredReviewRun, limit: number): void {
   const reviewDir = getWorkspaceReviewsDir(cwd);
   const filePath = join(reviewDir, `${run.id}.json`);
-  writeFileSync(filePath, `${JSON.stringify(run, null, 2)}\n`, "utf8");
+  writeFileSync(filePath, `${JSON.stringify(run, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  try {
+    chmodSync(filePath, 0o600);
+  } catch {
+    // Best effort only.
+  }
   pruneReviewRuns(cwd, limit);
 }
 

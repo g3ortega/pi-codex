@@ -1,0 +1,142 @@
+import type { StoredReviewRun, ReviewVerdict } from "../review/review-schema.js";
+
+export type CodexJobClass = "review" | "research";
+export type CodexReviewJobKind = "review" | "adversarial-review";
+export type CodexResearchJobKind = "research";
+export type CodexJobStatus =
+  | "queued"
+  | "starting"
+  | "running"
+  | "cancelling"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "lost";
+
+export interface ReviewSnapshot {
+  kind: CodexReviewJobKind;
+  repoRoot: string;
+  branch: string;
+  targetLabel: string;
+  targetMode: "working-tree" | "branch";
+  targetBaseRef?: string;
+  focusText?: string;
+  modelSpec: string;
+  reviewInput: string;
+}
+
+export interface ReviewJobResultPayload {
+  reviewRun: StoredReviewRun;
+}
+
+export interface ResearchSnapshot {
+  kind: CodexResearchJobKind;
+  repoRoot: string;
+  branch: string;
+  request: string;
+  modelSpec: string;
+  thinkingLevel?: string;
+  requestedToolNames: string[];
+  safeBuiltinTools: string[];
+  activeWebTools: string[];
+  inactiveAvailableWebTools: string[];
+  extensionPaths: string[];
+}
+
+export interface ResearchJobResultPayload {
+  request: string;
+  finalText: string;
+  activeToolNames: string[];
+  missingToolNames: string[];
+}
+
+interface BaseBackgroundJob {
+  id: string;
+  jobClass: CodexJobClass;
+  kind: string;
+  workspaceRoot: string;
+  cwd: string;
+  repoRoot: string;
+  branch: string;
+  modelProvider: string;
+  modelId: string;
+  modelSpec: string;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  cancelledAt?: string;
+  lastHeartbeatAt?: string;
+  status: CodexJobStatus;
+  phase: string;
+  runnerPid?: number | null;
+  errorMessage?: string;
+  snapshotFile: string;
+  resultFile: string;
+  resultJsonFile: string;
+  logFile: string;
+}
+
+export interface ReviewBackgroundJob extends BaseBackgroundJob {
+  jobClass: "review";
+  kind: CodexReviewJobKind;
+  targetLabel: string;
+  targetMode: "working-tree" | "branch";
+  targetBaseRef?: string;
+  focusText?: string;
+  resultVerdict?: ReviewVerdict;
+}
+
+export interface ResearchBackgroundJob extends BaseBackgroundJob {
+  jobClass: "research";
+  kind: CodexResearchJobKind;
+  request: string;
+  requestSummary: string;
+  thinkingLevel?: string;
+  requestedToolNames: string[];
+  activeToolNames: string[];
+  safeBuiltinTools: string[];
+  activeWebTools: string[];
+  inactiveAvailableWebTools: string[];
+  extensionPaths: string[];
+  missingToolNames?: string[];
+  sessionDir: string;
+}
+
+export type CodexBackgroundJob = ReviewBackgroundJob | ResearchBackgroundJob;
+
+export interface JobStatusSnapshot {
+  id: string;
+  jobClass: CodexJobClass;
+  kind: string;
+  status: CodexJobStatus;
+  phase: string;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  cancelledAt?: string;
+  lastHeartbeatAt?: string;
+  repoRoot: string;
+  branch: string;
+  subject: string;
+  resultVerdict?: ReviewVerdict;
+  runnerPid?: number | null;
+  errorMessage?: string;
+}
+
+export function isTerminalJobStatus(status: CodexJobStatus): boolean {
+  return status === "completed" || status === "failed" || status === "cancelled" || status === "lost";
+}
+
+export function isReviewBackgroundJob(job: CodexBackgroundJob): job is ReviewBackgroundJob {
+  return job.jobClass === "review";
+}
+
+export function isResearchBackgroundJob(job: CodexBackgroundJob): job is ResearchBackgroundJob {
+  return job.jobClass === "research";
+}
+
+export function backgroundJobSubject(job: CodexBackgroundJob): string {
+  return job.jobClass === "review" ? job.targetLabel : job.requestSummary;
+}

@@ -53,6 +53,7 @@ function globalExtensionSettingsPath(): string {
 function projectSettingsPath(cwd: string): string {
   const workspaceRoot = getWorkspaceRoot(cwd);
   let current = cwd;
+  const stopAtWorkspaceRoot = workspaceRoot !== cwd;
 
   while (true) {
     const candidate = join(current, ".pi", "settings.json");
@@ -60,7 +61,7 @@ function projectSettingsPath(cwd: string): string {
       return candidate;
     }
 
-    if (current === workspaceRoot) {
+    if (stopAtWorkspaceRoot && current === workspaceRoot) {
       break;
     }
 

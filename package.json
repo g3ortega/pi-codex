@@ -35,7 +35,8 @@
   "scripts": {
     "install:pi": "node --input-type=module -e \"import { spawnSync } from 'node:child_process'; import process from 'node:process'; const result = spawnSync('pi', ['install', '-l', process.cwd()], { stdio: 'inherit' }); process.exit(result.status ?? 1);\"",
     "typecheck": "tsc --noEmit",
-    "test:prompts": "node --test tests/*.test.mjs",
+    "test:prompts": "node --import tsx --test tests/*.test.mjs",
+    "test:coverage": "node --import tsx --test --experimental-test-coverage tests/*.test.mjs",
     "test": "npm run typecheck && npm run test:prompts",
     "check": "npm test"
   },
@@ -59,6 +60,7 @@
     "@mariozechner/pi-coding-agent": "0.65.0",
     "@mariozechner/pi-tui": "0.65.0",
     "@types/node": "^24.5.2",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.2"
   },
   "pi": {

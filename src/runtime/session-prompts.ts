@@ -3,6 +3,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 const KNOWN_WEB_RESEARCH_TOOLS = new Set(["web_search", "code_search", "fetch_content", "get_search_content"]);
 const LOCAL_EVIDENCE_TOOLS = new Set(["read", "grep", "find", "bash", "ls"]);
 const MUTATION_TOOLS = new Set(["edit", "write"]);
+const SAFE_BACKGROUND_BUILTINS = ["read", "grep", "find", "ls"] as const;
 const RESEARCH_TOOL_NAME_PATTERN = /(?:^web_|search|fetch|browse|crawl|scrape|url|pdf|github|video)/i;
 
 export interface ResearchToolSnapshot {
@@ -12,9 +13,17 @@ export interface ResearchToolSnapshot {
   activeMutationTools: string[];
 }
 
+export interface BackgroundResearchToolPlan {
+  interactiveSnapshot: ResearchToolSnapshot;
+  safeBuiltinTools: string[];
+  requestedToolNames: string[];
+  extensionPaths: string[];
+}
+
 type ToolLike = {
   name: string;
   sourceInfo?: {
+    path?: string;
     source?: string;
   };
 };
@@ -24,7 +33,60 @@ function uniqueSorted(values: Iterable<string>): string[] {
 }
 
 function formatToolList(toolNames: string[]): string {
-  return toolNames.length > 0 ? toolNames.join(", ") : "none";
+  const normalized = uniqueSorted(toolNames);
+  return normalized.length > 0 ? normalized.join(", ") : "none";
+}
+
+function formatInlineToolList(toolNames: string[]): string {
+  return toolNames.map((toolName) => `\`${toolName}\``).join(", ");
+}
+
+function getActiveReadOnlyInspectionTools(activeToolNames: Iterable<string>): string[] {
+  const activeNames = new Set(activeToolNames);
+  return uniqueSorted(["find", "ls", "grep", "read"].filter((toolName) => activeNames.has(toolName)));
+}
+
+export function buildInspectionRetryGuidance(activeToolNames: Iterable<string>, bashAvailable = true): string[] {
+  const activeReadOnlyTools = getActiveReadOnlyInspectionTools(activeToolNames);
+  if (activeReadOnlyTools.length > 0) {
+    return [`Use the appropriate PI read-only tool instead, such as ${formatInlineToolList(activeReadOnlyTools)}.`];
+  }
+
+  if (bashAvailable) {
+    return [
+      "No PI read-only inspection builtins are active right now beyond `bash`.",
+      "If you still need repository inspection, use read-only `bash` commands instead of retrying the same blocked step.",
+    ];
+  }
+
+  return [
+    "No PI repository-inspection tools are active right now.",
+    "State exactly which missing tool prevents grounded inspection instead of retrying the same blocked step.",
+  ];
+}
+
+function buildInspectionPreferenceLines(activeToolNames: Iterable<string>, bashAvailable = true): string[] {
+  const activeReadOnlyTools = getActiveReadOnlyInspectionTools(activeToolNames);
+  if (activeReadOnlyTools.length > 0) {
+    return [
+      `Prefer the active PI read-only inspection tools (${formatInlineToolList(activeReadOnlyTools)}) for repository inspection.`,
+      bashAvailable
+        ? "Use `bash` only when the active read-only tools cannot answer the question or when build, test, or runtime validation truly requires it."
+        : "If you need additional context beyond those tools, say exactly which inactive tool is missing.",
+    ];
+  }
+
+  if (bashAvailable) {
+    return [
+      "No PI read-only inspection builtins are active in this session beyond `bash`.",
+      "Use read-only `bash` inspection commands when needed, and avoid mutation commands unless the user explicitly asks for implementation.",
+    ];
+  }
+
+  return [
+    "No PI repository-inspection tools are active in this session.",
+    "Say exactly which missing tool prevents grounded inspection instead of guessing.",
+  ];
 }
 
 function isWebResearchTool(tool: ToolLike): boolean {
@@ -37,6 +99,14 @@ function isWebResearchTool(tool: ToolLike): boolean {
   }
 
   return RESEARCH_TOOL_NAME_PATTERN.test(tool.name);
+}
+
+function isExtensionBackedTool(tool: ToolLike): boolean {
+  return tool.sourceInfo?.source !== "builtin" && tool.sourceInfo?.source !== "sdk";
+}
+
+function isSafeBackgroundBuiltin(tool: ToolLike): boolean {
+  return SAFE_BACKGROUND_BUILTINS.includes(tool.name as (typeof SAFE_BACKGROUND_BUILTINS)[number]);
 }
 
 export function inspectResearchTools(pi: ExtensionAPI): ResearchToolSnapshot {
@@ -56,7 +126,53 @@ export function inspectResearchTools(pi: ExtensionAPI): ResearchToolSnapshot {
   };
 }
 
-export function buildTaskPrompt(request: string): string {
+export function buildBackgroundResearchToolPlan(pi: ExtensionAPI): BackgroundResearchToolPlan {
+  const activeToolNames = new Set(pi.getActiveTools());
+  const allTools = pi.getAllTools();
+  const activeTools = allTools.filter((tool) => activeToolNames.has(tool.name));
+  const activeWebTools = activeTools.filter((tool) => isWebResearchTool(tool));
+
+  return {
+    interactiveSnapshot: inspectResearchTools(pi),
+    safeBuiltinTools: [...SAFE_BACKGROUND_BUILTINS],
+    requestedToolNames: uniqueSorted([
+      ...SAFE_BACKGROUND_BUILTINS,
+      ...activeWebTools.map((tool) => tool.name),
+    ]),
+    extensionPaths: uniqueSorted(
+      activeWebTools
+        .filter((tool) => isExtensionBackedTool(tool) && tool.sourceInfo?.path)
+        .map((tool) => tool.sourceInfo?.path ?? ""),
+    ),
+  };
+}
+
+export function summarizeResearchRequest(request: string, maxLength = 96): string {
+  const normalized = request.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(1, maxLength - 1)).trimEnd()}...`;
+}
+
+export function inspectResearchToolsFromNames(pi: ExtensionAPI, activeToolNames: string[]): ResearchToolSnapshot {
+  const allTools = pi.getAllTools();
+  const activeNames = new Set(activeToolNames);
+  const activeTools = allTools.filter((tool) => activeNames.has(tool.name));
+
+  return {
+    activeWebTools: uniqueSorted(activeTools.filter((tool) => isWebResearchTool(tool)).map((tool) => tool.name)),
+    inactiveAvailableWebTools: uniqueSorted(
+      allTools.filter((tool) => !activeNames.has(tool.name) && isWebResearchTool(tool)).map((tool) => tool.name),
+    ),
+    activeLocalEvidenceTools: uniqueSorted(
+      activeTools.filter((tool) => LOCAL_EVIDENCE_TOOLS.has(tool.name) || isSafeBackgroundBuiltin(tool)).map((tool) => tool.name),
+    ),
+    activeMutationTools: uniqueSorted(activeTools.filter((tool) => MUTATION_TOOLS.has(tool.name)).map((tool) => tool.name)),
+  };
+}
+
+export function buildTaskPrompt(request: string, activeToolNames: string[] = ["find", "ls", "grep", "read", "bash"]): string {
   return [
     "<task>",
     "Handle this repository task.",
@@ -76,8 +192,7 @@ export function buildTaskPrompt(request: string): string {
     "</completeness_contract>",
     "",
     "<tooling_preference>",
-    "Prefer PI read-only tools (`find`, `ls`, `grep`, `read`) for repository inspection.",
-    "Use `bash` only when the read-only tools cannot answer the question or when build, test, or runtime validation truly requires it.",
+    ...buildInspectionPreferenceLines(activeToolNames, activeToolNames.includes("bash")),
     "</tooling_preference>",
     "",
     "<verification_loop>",
@@ -99,6 +214,10 @@ export function buildTaskPrompt(request: string): string {
 }
 
 export function buildResearchPrompt(request: string, snapshot: ResearchToolSnapshot): string {
+  const inspectionPreferenceLines = buildInspectionPreferenceLines(
+    snapshot.activeLocalEvidenceTools,
+    snapshot.activeLocalEvidenceTools.includes("bash"),
+  );
   const lines = [
     "<task>",
     "Research this request for the current repository and any external ecosystem questions.",
@@ -137,17 +256,16 @@ export function buildResearchPrompt(request: string, snapshot: ResearchToolSnaps
     "<tool_strategy>",
     `Active web research tools: ${formatToolList(snapshot.activeWebTools)}`,
     `Active local evidence tools: ${formatToolList(snapshot.activeLocalEvidenceTools)}`,
-    "Prefer PI read-only tools (`find`, `ls`, `grep`, `read`) over `bash` for repository inspection.",
-    "Only use `bash` when a read-only builtin cannot retrieve the needed evidence.",
+    ...inspectionPreferenceLines,
   ];
 
   if (snapshot.inactiveAvailableWebTools.length > 0) {
-    lines.push(`Installed but inactive web research tools: ${snapshot.inactiveAvailableWebTools.join(", ")}`);
+    lines.push(`Installed but inactive web research tools: ${formatToolList(snapshot.inactiveAvailableWebTools)}`);
   }
 
   if (snapshot.activeMutationTools.length > 0) {
     lines.push(
-      `Active mutation tools present but off-limits for this research request unless the user later asks to implement: ${snapshot.activeMutationTools.join(", ")}`,
+      `Active mutation tools present but off-limits for this research request unless the user later asks to implement: ${formatToolList(snapshot.activeMutationTools)}`,
     );
   }
 

@@ -1,3 +1,8 @@
+---
+name: codex-research-guidelines
+description: Use when the user wants evidence-first repository or ecosystem research inside PI, with clear separation between observed facts, inference, and open questions.
+---
+
 # Codex Research Guidelines
 
 Use this when the user wants an evidence-first Codex research workflow inside PI.

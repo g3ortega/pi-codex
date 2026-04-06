@@ -3,10 +3,27 @@ import { Box, Markdown, Text } from "@mariozechner/pi-tui";
 import { DynamicBorder, getMarkdownTheme } from "@mariozechner/pi-coding-agent";
 
 import { loadCodexSettings, registerCodexSettings } from "../../src/config/codex-settings.js";
+import { launchBackgroundReviewJob, runDetachedReviewJob, internalReviewJobCommandName } from "../../src/background/review-job.js";
+import {
+  internalResearchJobCommandName,
+  launchBackgroundResearchJob,
+  runDetachedResearchJob,
+} from "../../src/background/research-job.js";
 import { splitShellLikeArgs } from "../../src/runtime/arg-parser.js";
 import { detectBuiltinAlternativeForBash } from "../../src/runtime/bash-alternatives.js";
+import {
+  cancelBackgroundJob,
+  findBackgroundJob,
+  listBackgroundJobs,
+  readBackgroundJobResultMarkdown,
+} from "../../src/runtime/job-store.js";
+import {
+  renderBackgroundJobLaunchMarkdown,
+  renderBackgroundJobMarkdown,
+  renderBackgroundJobsOverviewMarkdown,
+} from "../../src/runtime/job-render.js";
 import { findProtectedPathInBashCommand, findProtectedPathMatch } from "../../src/runtime/path-protection.js";
-import { buildResearchPrompt, buildTaskPrompt, inspectResearchTools } from "../../src/runtime/session-prompts.js";
+import { buildInspectionRetryGuidance, buildResearchPrompt, buildTaskPrompt, inspectResearchTools } from "../../src/runtime/session-prompts.js";
 import { executeReviewRun, type ReviewCommandOptions } from "../../src/review/review-runner.js";
 import { findStoredReview, listStoredReviews } from "../../src/runtime/review-store.js";
 import {
@@ -56,6 +73,19 @@ function sendReport(pi: ExtensionAPI, title: string, markdown: string, variant: 
       timestamp: Date.now(),
     } satisfies ReportDetails,
   });
+}
+
+function reportVariantForBackgroundJob(job: Parameters<typeof renderBackgroundJobMarkdown>[0]): ReportDetails["variant"] {
+  if (job.status === "failed" || job.status === "cancelled" || job.status === "lost") {
+    return "warning";
+  }
+  if (job.jobClass === "review" && job.resultVerdict === "needs-attention") {
+    return "warning";
+  }
+  if (job.status === "completed") {
+    return "success";
+  }
+  return "info";
 }
 
 function createInjectedTurnWaiter() {
@@ -118,15 +148,58 @@ function buildLegacyPromptAliasGuidance(name: string, args: string): { title: st
   };
 }
 
+function splitLeadingOptionTokens(tokens: string[]): { optionTokens: string[]; remainderTokens: string[] } {
+  const optionTokens: string[] = [];
+  let index = 0;
+
+  while (index < tokens.length) {
+    const token = tokens[index];
+    if (token === "--") {
+      return {
+        optionTokens,
+        remainderTokens: tokens.slice(index + 1),
+      };
+    }
+    if (!token.startsWith("--")) {
+      return {
+        optionTokens,
+        remainderTokens: tokens.slice(index),
+      };
+    }
+
+    optionTokens.push(token);
+    index += 1;
+
+    const next = tokens[index];
+    if (next && next !== "--" && !next.startsWith("--")) {
+      optionTokens.push(next);
+      index += 1;
+    }
+  }
+
+  return {
+    optionTokens,
+    remainderTokens: [],
+  };
+}
+
 function parseReviewCommandOptions(rawArgs: string): ReviewCommandOptions {
   const tokens = splitShellLikeArgs(rawArgs);
+  const { optionTokens, remainderTokens } = splitLeadingOptionTokens(tokens);
   const options: ReviewCommandOptions = {};
-  const focus: string[] = [];
+  const focus: string[] = [...remainderTokens];
 
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index];
+  for (let index = 0; index < optionTokens.length; index += 1) {
+    const token = optionTokens[index];
+    if (token === "--background") {
+      options.background = true;
+      continue;
+    }
+    if (token === "--") {
+      continue;
+    }
     if (token === "--scope") {
-      const next = tokens[index + 1];
+      const next = optionTokens[index + 1];
       if (!next || (next !== "auto" && next !== "working-tree" && next !== "branch")) {
         throw new Error("`--scope` must be one of: auto, working-tree, branch.");
       }
@@ -135,7 +208,7 @@ function parseReviewCommandOptions(rawArgs: string): ReviewCommandOptions {
       continue;
     }
     if (token === "--base") {
-      const next = tokens[index + 1];
+      const next = optionTokens[index + 1];
       if (!next) {
         throw new Error("`--base` requires a git ref.");
       }
@@ -144,7 +217,7 @@ function parseReviewCommandOptions(rawArgs: string): ReviewCommandOptions {
       continue;
     }
     if (token === "--model") {
-      const next = tokens[index + 1];
+      const next = optionTokens[index + 1];
       if (!next) {
         throw new Error("`--model` requires provider/modelId.");
       }
@@ -152,7 +225,8 @@ function parseReviewCommandOptions(rawArgs: string): ReviewCommandOptions {
       index += 1;
       continue;
     }
-    focus.push(token);
+    focus.push(...optionTokens.slice(index));
+    break;
   }
 
   const focusText = focus.join(" ").trim();
@@ -161,6 +235,42 @@ function parseReviewCommandOptions(rawArgs: string): ReviewCommandOptions {
   }
 
   return options;
+}
+
+function parseResearchCommandOptions(rawArgs: string): { background: boolean; modelSpec?: string; request: string } {
+  const tokens = splitShellLikeArgs(rawArgs);
+  const { optionTokens, remainderTokens } = splitLeadingOptionTokens(tokens);
+  const request: string[] = [...remainderTokens];
+  let background = false;
+  let modelSpec: string | undefined;
+
+  for (let index = 0; index < optionTokens.length; index += 1) {
+    const token = optionTokens[index];
+    if (token === "--background") {
+      background = true;
+      continue;
+    }
+    if (token === "--") {
+      continue;
+    }
+    if (token === "--model") {
+      const next = optionTokens[index + 1];
+      if (!next) {
+        throw new Error("`--model` requires provider/modelId.");
+      }
+      modelSpec = next;
+      index += 1;
+      continue;
+    }
+    request.push(...optionTokens.slice(index));
+    break;
+  }
+
+  return {
+    background,
+    modelSpec,
+    request: request.join(" ").trim(),
+  };
 }
 
 async function handleReviewCommand(
@@ -175,6 +285,16 @@ async function handleReviewCommand(
     throw new Error(
       `\`/codex:review\` stays non-steerable. Retry with \`/codex:adversarial-review ${options.focusText}\` for focused review instructions.`,
     );
+  }
+  if (options.background) {
+    const job = await launchBackgroundReviewJob(ctx, settings, kind, options);
+    sendReport(
+      pi,
+      kind === "adversarial-review" ? "Codex Adversarial Review Job" : "Codex Review Job",
+      renderBackgroundJobLaunchMarkdown(job),
+      "info",
+    );
+    return;
   }
   const run = await executeReviewRun(ctx, settings, kind, options);
   sendReport(
@@ -199,7 +319,7 @@ async function handleTaskCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext,
   }
 
   const deliverAs = ctx.isIdle() ? undefined : "followUp";
-  pi.sendUserMessage(buildTaskPrompt(request), deliverAs ? { deliverAs } : undefined);
+  pi.sendUserMessage(buildTaskPrompt(request, pi.getActiveTools()), deliverAs ? { deliverAs } : undefined);
   sendReport(pi, "Codex Task", renderTaskQueuedMarkdown(request, deliverAs === "followUp"), "info");
   return true;
 }
@@ -211,7 +331,8 @@ async function handleResearchCommand(pi: ExtensionAPI, ctx: ExtensionCommandCont
     return false;
   }
 
-  const request = rawArgs.trim();
+  const options = parseResearchCommandOptions(rawArgs);
+  const request = options.request;
   if (!request) {
     sendReport(
       pi,
@@ -219,6 +340,12 @@ async function handleResearchCommand(pi: ExtensionAPI, ctx: ExtensionCommandCont
       "# Codex Research\n\nProvide a request, for example `/codex:research compare PI extension APIs with Codex CLI and verify current web tooling support`.\n",
       "warning",
     );
+    return false;
+  }
+
+  if (options.background) {
+    const job = await launchBackgroundResearchJob(pi, ctx, settings, request, options.modelSpec);
+    sendReport(pi, "Codex Research Job", renderBackgroundJobLaunchMarkdown(job), "info");
     return false;
   }
 
@@ -231,13 +358,39 @@ async function handleResearchCommand(pi: ExtensionAPI, ctx: ExtensionCommandCont
 
 async function handleStatusCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext, rawArgs: string): Promise<void> {
   const reference = rawArgs.trim() || undefined;
+  let job = null;
+  try {
+    job = findBackgroundJob(ctx.cwd, reference, { preferActive: Boolean(reference) });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendReport(pi, "Codex Status", `# Codex Status\n\n${message}\n`, "warning");
+    return;
+  }
+  if (job) {
+    sendReport(pi, "Codex Job Status", renderBackgroundJobMarkdown(job), reportVariantForBackgroundJob(job));
+    return;
+  }
+
   if (reference) {
-    const run = findStoredReview(ctx.cwd, reference);
+    let run = null;
+    try {
+      run = findStoredReview(ctx.cwd, reference);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      sendReport(pi, "Codex Status", `# Codex Status\n\n${message}\n`, "warning");
+      return;
+    }
     if (!run) {
-      sendReport(pi, "Codex Result", `# Codex Result\n\nNo stored review matches \`${reference}\` for this workspace.\n`, "warning");
+      sendReport(pi, "Codex Status", `# Codex Status\n\nNo background job or stored review matches \`${reference}\` for this workspace.\n`, "warning");
       return;
     }
     sendReport(pi, "Codex Result", renderStoredReviewMarkdown(run), "info");
+    return;
+  }
+
+  const jobs = listBackgroundJobs(ctx.cwd);
+  if (jobs.length > 0) {
+    sendReport(pi, "Codex Status", renderBackgroundJobsOverviewMarkdown(jobs), "info");
     return;
   }
 
@@ -246,12 +399,61 @@ async function handleStatusCommand(pi: ExtensionAPI, ctx: ExtensionCommandContex
 }
 
 async function handleResultCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext, rawArgs: string): Promise<void> {
-  const run = findStoredReview(ctx.cwd, rawArgs.trim() || undefined);
+  const reference = rawArgs.trim() || undefined;
+  let job = null;
+  try {
+    job = findBackgroundJob(ctx.cwd, reference);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendReport(pi, "Codex Result", `# Codex Result\n\n${message}\n`, "warning");
+    return;
+  }
+  if (job) {
+    const markdown = readBackgroundJobResultMarkdown(job.workspaceRoot, job.id);
+    if (markdown) {
+      sendReport(pi, "Codex Result", markdown, reportVariantForBackgroundJob(job));
+      return;
+    }
+
+    sendReport(
+      pi,
+      "Codex Result",
+      renderBackgroundJobMarkdown(job),
+      reportVariantForBackgroundJob(job),
+    );
+    return;
+  }
+
+  let run = null;
+  try {
+    run = findStoredReview(ctx.cwd, reference);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendReport(pi, "Codex Result", `# Codex Result\n\n${message}\n`, "warning");
+    return;
+  }
   if (!run) {
-    sendReport(pi, "Codex Result", "# Codex Result\n\nNo stored review results are available for this workspace.\n", "warning");
+    sendReport(pi, "Codex Result", "# Codex Result\n\nNo stored background job result or foreground review result is available for this workspace.\n", "warning");
     return;
   }
   sendReport(pi, "Codex Result", renderStoredReviewMarkdown(run), "info");
+}
+
+async function handleCancelCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext, rawArgs: string): Promise<void> {
+  let cancelled = null;
+  try {
+    cancelled = cancelBackgroundJob(ctx.cwd, rawArgs.trim() || undefined);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendReport(pi, "Codex Cancel", `# Codex Cancel\n\n${message}\n`, "warning");
+    return;
+  }
+  if (!cancelled) {
+    sendReport(pi, "Codex Cancel", "# Codex Cancel\n\nNo active background Codex job is available to cancel in this workspace.\n", "warning");
+    return;
+  }
+
+  sendReport(pi, "Codex Cancel", renderBackgroundJobMarkdown(cancelled), "warning");
 }
 
 async function handleConfigCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
@@ -362,7 +564,7 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
 
     if (event.toolName === "bash") {
       const command = String((event.input as { command?: unknown }).command ?? "");
-      const builtinAlternative = detectBuiltinAlternativeForBash(command);
+      const builtinAlternative = detectBuiltinAlternativeForBash(command, pi.getActiveTools());
       if (builtinAlternative) {
         builtinAlternativeReason = builtinAlternative.reason;
       }
@@ -412,7 +614,7 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
               textBody,
               "",
               "Do not retry the same repository-inspection step with bash.",
-              "Use the appropriate PI read-only tool instead, such as `find`, `ls`, `grep`, or `read`.",
+              ...buildInspectionRetryGuidance(pi.getActiveTools(), pi.getActiveTools().includes("bash")),
             ].join("\n"),
           },
         ],
@@ -470,11 +672,34 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
         await waiter.promise;
       }
     });
+  pi.registerCommand(internalReviewJobCommandName(), {
+    description: "Internal pi-codex background review runner",
+    handler: async (args, ctx) => {
+      const jobId = args.trim();
+      if (!jobId) {
+        throw new Error("Background review runner requires a job id.");
+      }
+      await runDetachedReviewJob(ctx, loadCodexSettings(ctx.cwd), jobId);
+    },
+  });
+  pi.registerCommand(internalResearchJobCommandName(), {
+    description: "Internal pi-codex background research runner",
+    handler: async (args, ctx) => {
+      const jobId = args.trim();
+      if (!jobId) {
+        throw new Error("Background research runner requires a job id.");
+      }
+      await runDetachedResearchJob(pi, ctx, loadCodexSettings(ctx.cwd), jobId);
+    },
+  });
   registerCommandPair(pi, "codex:status", "codex-status", "Show stored Codex review history for the current workspace", async (args, ctx) => {
     await handleStatusCommand(pi, ctx, args);
   });
   registerCommandPair(pi, "codex:result", "codex-result", "Show a stored Codex review result for the current workspace", async (args, ctx) => {
     await handleResultCommand(pi, ctx, args);
+  });
+  registerCommandPair(pi, "codex:cancel", "codex-cancel", "Cancel an active background Codex job for the current workspace", async (args, ctx) => {
+    await handleCancelCommand(pi, ctx, args);
   });
   registerCommandPair(pi, "codex:config", "codex-config", "Show the merged Codex configuration for this PI session", async (_args, ctx) => {
     await handleConfigCommand(pi, ctx);

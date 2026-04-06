@@ -16,7 +16,17 @@ function isSimpleCommand(command: string): boolean {
   return trimmed.length > 0 && !SHELL_ESCAPE_OR_REDIRECTION_PATTERN.test(trimmed) && !SHELL_CHAIN_PATTERN.test(trimmed);
 }
 
-export function detectBuiltinAlternativeForBash(command: string): BuiltinAlternative | null {
+function isBuiltinActive(tool: BuiltinAlternative["tool"], activeToolNames?: Iterable<string>): boolean {
+  if (!activeToolNames) {
+    return true;
+  }
+  return new Set(activeToolNames).has(tool);
+}
+
+export function detectBuiltinAlternativeForBash(
+  command: string,
+  activeToolNames?: Iterable<string>,
+): BuiltinAlternative | null {
   const trimmed = trimCommand(command);
   if (!isSimpleCommand(trimmed)) {
     return null;
@@ -27,6 +37,9 @@ export function detectBuiltinAlternativeForBash(command: string): BuiltinAlterna
       return null;
     }
     if (/\|\s*sort(?:\s|$)/i.test(trimmed) || /^find\b/i.test(trimmed)) {
+      if (!isBuiltinActive("find", activeToolNames)) {
+        return null;
+      }
       return {
         tool: "find",
         reason: "Use the built-in `find` tool for file discovery instead of bash.",
@@ -35,6 +48,9 @@ export function detectBuiltinAlternativeForBash(command: string): BuiltinAlterna
   }
 
   if (/^ls\b/i.test(trimmed)) {
+    if (!isBuiltinActive("ls", activeToolNames)) {
+      return null;
+    }
     return {
       tool: "ls",
       reason: "Use the built-in `ls` tool for directory listing instead of bash.",
@@ -42,6 +58,9 @@ export function detectBuiltinAlternativeForBash(command: string): BuiltinAlterna
   }
 
   if (/^(?:grep|rg)\b/i.test(trimmed)) {
+    if (!isBuiltinActive("grep", activeToolNames)) {
+      return null;
+    }
     return {
       tool: "grep",
       reason: "Use the built-in `grep` tool for content search instead of bash.",
@@ -49,6 +68,9 @@ export function detectBuiltinAlternativeForBash(command: string): BuiltinAlterna
   }
 
   if (/^(?:cat|sed\s+-n\s+['"]?\d+(?:,\d+)?p['"]?)\b/i.test(trimmed)) {
+    if (!isBuiltinActive("read", activeToolNames)) {
+      return null;
+    }
     return {
       tool: "read",
       reason: "Use the built-in `read` tool for file content inspection instead of bash.",

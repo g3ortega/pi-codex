@@ -1,3 +1,8 @@
+---
+name: codex-task-guidelines
+description: Use when the user wants a Codex-flavored execution style inside PI, with repository inspection, direct implementation, and concise factual communication.
+---
+
 # Codex Task Guidelines
 
 Use this when the user wants a Codex-flavored execution style inside PI.

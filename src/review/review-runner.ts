@@ -12,6 +12,20 @@ export interface ReviewCommandOptions {
   base?: string;
   modelSpec?: string;
   focusText?: string;
+  background?: boolean;
+}
+
+export interface PreparedReviewExecutionInput {
+  id?: string;
+  kind: "review" | "adversarial-review";
+  repoRoot: string;
+  branch: string;
+  targetLabel: string;
+  targetMode: "working-tree" | "branch";
+  targetBaseRef?: string;
+  reviewInput: string;
+  modelSpec?: string;
+  focusText?: string;
 }
 
 const REVIEW_PROMPT = `<role>
@@ -201,7 +215,7 @@ function interpolatePrompt(
     .replaceAll("{{REVIEW_INPUT}}", values.REVIEW_INPUT);
 }
 
-function resolveModel(ctx: ExtensionCommandContext, settings: CodexSettings, explicitModel?: string): Model<any> {
+export function resolveModel(ctx: ExtensionCommandContext, settings: CodexSettings, explicitModel?: string): Model<any> {
   const modelSpec = explicitModel ?? settings.defaultReviewModel;
   if (!modelSpec) {
     if (!ctx.model) {
@@ -230,6 +244,7 @@ async function runModelCompletion(
   model: Model<any>,
   systemPrompt: string,
   prompt: string,
+  externalSignal?: AbortSignal,
 ): Promise<string> {
   const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
   if (!auth.ok) {
@@ -271,7 +286,7 @@ async function runModelCompletion(
   };
 
   if (!ctx.hasUI) {
-    return request();
+    return request(externalSignal);
   }
 
   const result = await ctx.ui.custom<
@@ -301,6 +316,61 @@ async function runModelCompletion(
   return result.value;
 }
 
+export function buildStructuredReviewPrompt(
+  kind: "review" | "adversarial-review",
+  targetLabel: string,
+  focusText: string | undefined,
+  reviewInput: string,
+): string {
+  return interpolatePrompt(kind === "adversarial-review" ? ADVERSARIAL_REVIEW_PROMPT : REVIEW_PROMPT, {
+    TARGET_LABEL: targetLabel,
+    USER_FOCUS: focusText?.trim() || "(none)",
+    REVIEW_INPUT: reviewInput,
+  });
+}
+
+export async function executePreparedReviewRun(
+  ctx: ExtensionCommandContext,
+  settings: CodexSettings,
+  input: PreparedReviewExecutionInput,
+  options: { persist?: boolean; signal?: AbortSignal } = {},
+): Promise<StoredReviewRun> {
+  const model = resolveModel(ctx, settings, input.modelSpec);
+  const prompt = buildStructuredReviewPrompt(input.kind, input.targetLabel, input.focusText, input.reviewInput);
+  const rawOutput = await runModelCompletion(
+    ctx,
+    input.kind === "adversarial-review" ? "Running Codex adversarial review..." : "Running Codex review...",
+    model,
+    "You are Codex. Follow the review contract exactly and return only the requested JSON.",
+    prompt,
+    options.signal,
+  );
+
+  const parsed = parseStructuredReviewOutput(rawOutput);
+  const run: StoredReviewRun = {
+    id: input.id ?? generateReviewId(input.kind === "adversarial-review" ? "adversarial-review" : "review"),
+    kind: input.kind,
+    createdAt: new Date().toISOString(),
+    repoRoot: input.repoRoot,
+    branch: input.branch,
+    targetLabel: input.targetLabel,
+    targetMode: input.targetMode,
+    targetBaseRef: input.targetBaseRef,
+    modelProvider: model.provider,
+    modelId: model.id,
+    focusText: input.focusText?.trim() || undefined,
+    result: parsed.parsed,
+    parseError: parsed.parseError,
+    rawOutput: parsed.rawOutput,
+  };
+
+  if (options.persist ?? true) {
+    storeReviewRun(input.repoRoot, run, settings.reviewHistoryLimit);
+  }
+
+  return run;
+}
+
 export async function executeReviewRun(
   ctx: ExtensionCommandContext,
   settings: CodexSettings,
@@ -312,40 +382,15 @@ export async function executeReviewRun(
     base: options.base,
   });
   const reviewContext = collectReviewContext(ctx.cwd, target);
-  const model = resolveModel(ctx, settings, options.modelSpec);
-
-  const prompt = interpolatePrompt(kind === "adversarial-review" ? ADVERSARIAL_REVIEW_PROMPT : REVIEW_PROMPT, {
-    TARGET_LABEL: reviewContext.target.label,
-    USER_FOCUS: options.focusText?.trim() || "(none)",
-    REVIEW_INPUT: reviewContext.content,
-  });
-
-  const rawOutput = await runModelCompletion(
-    ctx,
-    kind === "adversarial-review" ? "Running Codex adversarial review..." : "Running Codex review...",
-    model,
-    "You are Codex. Follow the review contract exactly and return only the requested JSON.",
-    prompt,
-  );
-
-  const parsed = parseStructuredReviewOutput(rawOutput);
-  const run: StoredReviewRun = {
-    id: generateReviewId(kind === "adversarial-review" ? "adversarial-review" : "review"),
+  return executePreparedReviewRun(ctx, settings, {
     kind,
-    createdAt: new Date().toISOString(),
     repoRoot: reviewContext.repoRoot,
     branch: reviewContext.branch,
     targetLabel: reviewContext.target.label,
     targetMode: reviewContext.target.mode,
     targetBaseRef: reviewContext.target.baseRef,
-    modelProvider: model.provider,
-    modelId: model.id,
-    focusText: options.focusText?.trim() || undefined,
-    result: parsed.parsed,
-    parseError: parsed.parseError,
-    rawOutput: parsed.rawOutput,
-  };
-
-  storeReviewRun(reviewContext.repoRoot, run, settings.reviewHistoryLimit);
-  return run;
+    reviewInput: reviewContext.content,
+    modelSpec: options.modelSpec,
+    focusText: options.focusText,
+  });
 }

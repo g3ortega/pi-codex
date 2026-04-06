@@ -1,3 +1,8 @@
+---
+name: codex-review-guidelines
+description: Use when you want a Codex-style review mindset inside PI, focused on bugs, regressions, unsafe assumptions, and missing tests rather than style commentary.
+---
+
 # Codex Review Guidelines
 
 Use this when you need a review mindset inside PI.

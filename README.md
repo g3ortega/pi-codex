@@ -41,12 +41,14 @@ That gives the package strong write and shell safety defaults without taking ove
 - `/codex:task`
 - `/codex:status`
 - `/codex:result`
+- `/codex:cancel`
 - `/codex:config`
 
 Alias commands are also registered:
 
 - `/codex-status`
 - `/codex-result`
+- `/codex-cancel`
 - `/codex-config`
 
 ## Prompt templates
@@ -124,6 +126,7 @@ Run a structured review of the current repository state:
 /codex:review
 /codex:review --scope working-tree
 /codex:review --base origin/main
+/codex:review --background --scope working-tree
 ```
 
 `/codex:review` stays non-steerable by design. If you want to challenge a specific decision or risk area, use `/codex:adversarial-review`.
@@ -133,6 +136,7 @@ Run a harsher blocking review:
 ```bash
 /codex:adversarial-review
 /codex:adversarial-review --scope branch
+/codex:adversarial-review --background --scope branch
 ```
 
 Queue a Codex-oriented implementation request into the active PI session:
@@ -146,7 +150,14 @@ Queue a Codex-oriented research request into the active PI session:
 ```bash
 /codex:research compare PI extension APIs with Codex CLI and verify current web-tooling options
 /codex:research deeply inspect the repo, then use web tools if available to validate the best package architecture
+/codex:research --background summarize the repo and key commands
 ```
+
+Background research runs in a detached PI child session with a headless-safe tool surface:
+
+- safe read-only built-ins: `read`, `grep`, `find`, `ls`
+- active web research tools only when they were already active in the launching PI session
+- no mutation tools in the detached child
 
 Inspect stored review history for the current workspace:
 
@@ -154,6 +165,7 @@ Inspect stored review history for the current workspace:
 /codex:status
 /codex:result
 /codex:result review-m123abc
+/codex:cancel review-m123abc
 ```
 
 ## Configuration

@@ -31,3 +31,10 @@ test("does not redirect bash when the command is chained, redirected, or riskier
   assert.equal(detectBuiltinAlternativeForBash("find . -type f > out.txt"), null);
   assert.equal(detectBuiltinAlternativeForBash("git diff --stat origin/main...HEAD"), null);
 });
+
+test("does not redirect bash when the equivalent builtin tool is inactive", () => {
+  assert.equal(detectBuiltinAlternativeForBash("ls -la src", ["bash", "read"]), null);
+  assert.equal(detectBuiltinAlternativeForBash("find . -maxdepth 2 -type f", ["bash", "read"]), null);
+  assert.equal(detectBuiltinAlternativeForBash("rg codex src", ["bash", "read"]), null);
+  assert.equal(detectBuiltinAlternativeForBash("cat README.md", ["bash"]), null);
+});
