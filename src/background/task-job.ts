@@ -6,7 +6,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-cod
 
 import type { CodexSettings } from "../config/codex-settings.js";
 import { getCurrentBranch, getRepoRoot } from "../review/git-context.js";
-import { resolveModel } from "../review/review-runner.js";
+import { requireModelAuth, resolveModel } from "../review/review-runner.js";
 import {
   appendJobLog,
   createTaskBackgroundJob,
@@ -249,14 +249,16 @@ function buildTaskJob(
   return { job, snapshot };
 }
 
-function launchBackgroundTaskJob(
+async function launchBackgroundTaskJob(
   pi: ExtensionAPI,
   ctx: ExtensionCommandContext,
   settings: CodexSettings,
   request: string,
   profile: CodexTaskExecutionProfile,
   explicitModel?: string,
-): TaskBackgroundJob {
+): Promise<TaskBackgroundJob> {
+  const model = resolveModel(ctx, settings, explicitModel);
+  await requireModelAuth(ctx, model);
   const { job, snapshot } = buildTaskJob(pi, ctx, settings, request, profile, explicitModel);
   createTaskBackgroundJob(job, snapshot);
   appendJobLog(job.workspaceRoot, job.id, `Queued background ${profile} task job.`);

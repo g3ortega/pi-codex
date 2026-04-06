@@ -83,6 +83,8 @@ function createInjectedTurnWaiter() {
   };
 }
 
+type InjectedTurnWaiter = ReturnType<typeof createInjectedTurnWaiter>;
+
 function parseSlashInput(text: string): { name: string; args: string } | null {
   const trimmed = text.trim();
   if (!trimmed.startsWith("/")) {
@@ -326,6 +328,109 @@ async function handleResearchCommand(pi: ExtensionAPI, ctx: ExtensionCommandCont
   return true;
 }
 
+async function runTaskCommandWithWaiter(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  args: string,
+  pendingInjectedTurnWaiters: InjectedTurnWaiter[],
+): Promise<void> {
+  const waiter = IS_PRINT_MODE ? createInjectedTurnWaiter() : null;
+  if (waiter) {
+    pendingInjectedTurnWaiters.push(waiter);
+  }
+
+  try {
+    const injected = await handleTaskCommand(pi, ctx, args);
+    if (waiter && injected) {
+      await waiter.promise;
+    }
+  } finally {
+    if (waiter) {
+      const index = pendingInjectedTurnWaiters.indexOf(waiter);
+      if (index >= 0) {
+        pendingInjectedTurnWaiters.splice(index, 1);
+      }
+      waiter.resolve();
+    }
+  }
+}
+
+async function runResearchCommandWithWaiter(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  args: string,
+  pendingInjectedTurnWaiters: InjectedTurnWaiter[],
+): Promise<void> {
+  const waiter = IS_PRINT_MODE ? createInjectedTurnWaiter() : null;
+  if (waiter) {
+    pendingInjectedTurnWaiters.push(waiter);
+  }
+
+  try {
+    const injected = await handleResearchCommand(pi, ctx, args);
+    if (waiter && injected) {
+      await waiter.promise;
+    }
+  } finally {
+    if (waiter) {
+      const index = pendingInjectedTurnWaiters.indexOf(waiter);
+      if (index >= 0) {
+        pendingInjectedTurnWaiters.splice(index, 1);
+      }
+      waiter.resolve();
+    }
+  }
+}
+
+async function dispatchCodexCommandByName(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  name: string,
+  args: string,
+  pendingInjectedTurnWaiters: InjectedTurnWaiter[],
+): Promise<boolean> {
+  switch (name) {
+    case "codex:review":
+      await handleReviewCommand(pi, ctx, "review", args);
+      return true;
+    case "codex:adversarial-review":
+      await handleReviewCommand(pi, ctx, "adversarial-review", args);
+      return true;
+    case "codex:task":
+      await runTaskCommandWithWaiter(pi, ctx, args, pendingInjectedTurnWaiters);
+      return true;
+    case "codex:research":
+      await runResearchCommandWithWaiter(pi, ctx, args, pendingInjectedTurnWaiters);
+      return true;
+    case "codex:status":
+    case "codex-status":
+      await handleStatusCommand(pi, ctx, args);
+      return true;
+    case "codex:result":
+    case "codex-result":
+      await handleResultCommand(pi, ctx, args);
+      return true;
+    case "codex:cancel":
+    case "codex-cancel":
+      await handleCancelCommand(pi, ctx, args);
+      return true;
+    case "codex:jobs":
+    case "codex-jobs":
+      await handleJobsCommand(pi, ctx);
+      return true;
+    case "codex:apply":
+    case "codex-apply":
+      await handleApplyCommand(pi, ctx, args);
+      return true;
+    case "codex:config":
+    case "codex-config":
+      await handleConfigCommand(pi, ctx);
+      return true;
+    default:
+      return false;
+  }
+}
+
 async function handleStatusCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext, rawArgs: string): Promise<void> {
   const reference = rawArgs.trim() || undefined;
   let job = null;
@@ -525,23 +630,44 @@ function registerSingleCommand(
 }
 
 export default function registerCodexExtension(pi: ExtensionAPI): void {
-  let pendingInjectedTurnWaiters: Array<{ resolve: () => void }> = [];
+  let pendingInjectedTurnWaiters: InjectedTurnWaiter[] = [];
 
   registerCodexSettings(pi);
 
-  pi.on("input", (event) => {
+  pi.on("input", async (event, ctx) => {
+    if (event.source === "extension") {
+      return { action: "continue" } as const;
+    }
+
     const slash = parseSlashInput(event.text);
     if (!slash) {
       return { action: "continue" } as const;
     }
 
     const guidance = buildLegacyPromptAliasGuidance(slash.name, slash.args);
-    if (!guidance) {
+    if (guidance) {
+      sendReport(pi, guidance.title, guidance.markdown, "warning");
+      return { action: "handled" } as const;
+    }
+
+    if (!slash.name.startsWith("codex:") && !slash.name.startsWith("codex-")) {
       return { action: "continue" } as const;
     }
 
-    sendReport(pi, guidance.title, guidance.markdown, "warning");
-    return { action: "handled" } as const;
+    try {
+      const handled = await dispatchCodexCommandByName(
+        pi,
+        ctx as ExtensionCommandContext,
+        slash.name,
+        slash.args,
+        pendingInjectedTurnWaiters,
+      );
+      return handled ? ({ action: "handled" } as const) : ({ action: "continue" } as const);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      sendReport(pi, "Codex Error", `# Codex Error\n\n${message}\n`, "error");
+      return { action: "handled" } as const;
+    }
   });
 
   pi.registerMessageRenderer(REPORT_TYPE, (message, _options, theme) => {
@@ -664,35 +790,11 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
     await handleReviewCommand(pi, ctx, "adversarial-review", args);
   });
   registerSingleCommand(pi, "codex:task", "Inject a Codex-style implementation request into the active PI session", async (args, ctx) => {
-    const waiter = IS_PRINT_MODE ? createInjectedTurnWaiter() : null;
-    if (waiter) {
-      pendingInjectedTurnWaiters.push(waiter);
-    }
-
-    const injected = await handleTaskCommand(pi, ctx, args);
-    if (waiter && !injected) {
-      pendingInjectedTurnWaiters = pendingInjectedTurnWaiters.filter((entry) => entry !== waiter);
-      waiter.resolve();
-    }
-    if (waiter && injected) {
-      await waiter.promise;
-    }
+    await runTaskCommandWithWaiter(pi, ctx, args, pendingInjectedTurnWaiters);
   });
   registerSingleCommand(pi, "codex:research", "Inject a Codex-style research request into the active PI session, adapted to active PI web and evidence tools", async (args, ctx) => {
-      const waiter = IS_PRINT_MODE ? createInjectedTurnWaiter() : null;
-      if (waiter) {
-        pendingInjectedTurnWaiters.push(waiter);
-      }
-
-      const injected = await handleResearchCommand(pi, ctx, args);
-      if (waiter && !injected) {
-        pendingInjectedTurnWaiters = pendingInjectedTurnWaiters.filter((entry) => entry !== waiter);
-        waiter.resolve();
-      }
-      if (waiter && injected) {
-        await waiter.promise;
-      }
-    });
+    await runResearchCommandWithWaiter(pi, ctx, args, pendingInjectedTurnWaiters);
+  });
   pi.registerCommand(internalReviewJobCommandName(), {
     description: "Internal pi-codex background review runner",
     handler: async (args, ctx) => {

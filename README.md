@@ -181,7 +181,8 @@ Background research runs in a detached PI child session with a headless-safe too
 - active web research tools only when they were already active in the launching PI session
 - no mutation tools in the detached child
 
-Background review and research jobs notify the originating PI session when they complete, fail, or are cancelled, so you can keep working in the main thread without polling.
+Background jobs notify the originating PI session when they complete, fail, or are cancelled, so you can keep working in the main thread without polling.
+Short stored results are inlined directly into the completion notification; longer results show an answer-first preview with exact follow-up commands such as `/codex:result <job-id>` or `/codex:apply <job-id>`.
 
 Inspect stored review history for the current workspace:
 

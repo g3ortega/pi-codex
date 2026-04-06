@@ -15,6 +15,7 @@ import {
   getJobSessionDir,
   getJobSnapshotFile,
   readBackgroundJob,
+  writeResearchJobResult,
   writeReviewJobResult,
   writeTaskJobResult,
 } from "../src/runtime/job-store.ts";
@@ -281,7 +282,8 @@ test("background notifier delivers a completed review once for the originating s
       await sleep(250);
       assert.equal(fake.sent.length, 1);
       assert.equal(fake.sent[0].message.customType, "codex-report");
-      assert.match(fake.sent[0].message.content, /No-ship: synthetic notification test found a blocking issue\./);
+      assert.match(fake.sent[0].message.content, /# Codex Review/);
+      assert.match(fake.sent[0].message.content, /Synthetic markdown/);
       assert.equal(fake.sent[0].options?.triggerTurn, false);
 
       await sleep(250);
@@ -384,7 +386,8 @@ test("background notifier delivers a completed readonly task once for the origin
       await sleep(250);
       assert.equal(fake.sent.length, 1);
       assert.equal(fake.sent[0].message.customType, "codex-report");
-      assert.match(fake.sent[0].message.content, /Diagnosis complete\. Proposed patch: restore auth refresh backoff\./);
+      assert.match(fake.sent[0].message.content, /# Codex Task/);
+      assert.match(fake.sent[0].message.content, /Synthetic task markdown/);
       assert.equal(fake.sent[0].options?.triggerTurn, false);
 
       await sleep(250);
@@ -393,6 +396,71 @@ test("background notifier delivers a completed readonly task once for the origin
       const refreshed = readBackgroundJob(workspaceRoot, job.id);
       assert.ok(refreshed?.notificationDeliveredAt);
       assert.equal(refreshed?.notifiedSessionId, "session-a");
+
+      await fake.handlers.get("session_shutdown")();
+    });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("background notifier previews long research results instead of inlining them fully", async () => {
+  const root = makeTempDir("pi-codex-notify-research-long-");
+  const homeDir = path.join(root, "home");
+  const workspaceRoot = path.join(root, "workspace");
+  fs.mkdirSync(workspaceRoot, { recursive: true });
+
+  try {
+    await withHomeDir(homeDir, async () => {
+      const job = buildResearchJob(workspaceRoot, {
+        id: "research-notify-long",
+        status: "completed",
+        phase: "done",
+        completedAt: iso(-250),
+        updatedAt: iso(-250),
+      });
+      createResearchBackgroundJob(job, buildResearchSnapshot(workspaceRoot));
+
+      const longAnswer = "A".repeat(2_600);
+      const markdown = [
+        "# Codex Research",
+        "",
+        "- Job ID: research-notify-long",
+        "",
+        "Final answer:",
+        "",
+        "## Findings",
+        "",
+        "- First substantive finding for the preview.",
+        "- Second substantive finding for the preview.",
+        "",
+        longAnswer,
+      ].join("\n");
+
+      writeResearchJobResult(
+        workspaceRoot,
+        job.id,
+        {
+          request: "investigate background mode",
+          finalText: "This is a long research result that should be previewed instead of inlined.",
+          activeToolNames: ["read", "find"],
+          missingToolNames: [],
+        },
+        markdown,
+      );
+
+      const fake = createFakePi();
+      registerCodexNotifyExtension(fake.api);
+      await fake.handlers.get("session_start")(null, createSessionContext(workspaceRoot));
+
+      await sleep(250);
+      assert.equal(fake.sent.length, 1);
+      assert.match(fake.sent[0].message.content, /# Codex Research Complete/);
+      assert.match(fake.sent[0].message.content, /Preview:/);
+      assert.match(fake.sent[0].message.content, /First substantive finding for the preview\./);
+      assert.match(fake.sent[0].message.content, /Result was too long to inline fully/);
+      assert.match(fake.sent[0].message.content, /Use `\/codex:result research-notify-long` for the full stored research result\./);
+      assert.doesNotMatch(fake.sent[0].message.content, /^# Codex Research\n\n- Job ID: research-notify-long\n\nFinal answer:/m);
 
       await fake.handlers.get("session_shutdown")();
     });

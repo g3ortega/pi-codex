@@ -6,6 +6,7 @@ import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-age
 import {
   markBackgroundJobNotified,
   readBackgroundJob,
+  readBackgroundJobResultMarkdown,
   readResearchJobResult,
   readReviewJobResult,
   readTaskJobResult,
@@ -185,7 +186,10 @@ function stopWatching(state: NotifyState): void {
 
 function notifyCompletion(pi: ExtensionAPI, state: NotifyState, job: CodexBackgroundJob): void {
   const summary = summarizeCompletion(job);
-  const markdown = renderBackgroundJobCompletionMarkdown(job, summary);
+  const fullResultMarkdown = job.status === "completed"
+    ? readBackgroundJobResultMarkdown(job.workspaceRoot, job.id) ?? undefined
+    : undefined;
+  const markdown = renderBackgroundJobCompletionMarkdown(job, summary, fullResultMarkdown);
 
   if (state.lastUiContext?.hasUI) {
     const label = job.jobClass === "review"

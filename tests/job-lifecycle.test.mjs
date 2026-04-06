@@ -5,9 +5,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { runDetachedResearchJob } from "../src/background/research-job.ts";
-import { runDetachedReviewJob } from "../src/background/review-job.ts";
-import { runDetachedTaskJob } from "../src/background/task-job.ts";
+import { launchBackgroundResearchJob, runDetachedResearchJob } from "../src/background/research-job.ts";
+import { launchBackgroundReviewJob, runDetachedReviewJob } from "../src/background/review-job.ts";
+import { launchBackgroundReadonlyTaskJob, runDetachedTaskJob } from "../src/background/task-job.ts";
 import {
   cancelBackgroundJob,
   createResearchBackgroundJob,
@@ -220,6 +220,40 @@ const DUMMY_SETTINGS = {
   protectedPaths: [".env", ".git/", "node_modules/"],
 };
 
+function createPiStub(activeTools = ["read", "grep", "find", "ls"]) {
+  return {
+    getActiveTools() {
+      return [...activeTools];
+    },
+    getAllTools() {
+      return activeTools.map((name) => ({
+        name,
+        sourceInfo: { source: "builtin" },
+      }));
+    },
+    getThinkingLevel() {
+      return undefined;
+    },
+  };
+}
+
+function createNoAuthContext(cwd) {
+  return {
+    cwd,
+    model: { provider: "openai-codex", id: "gpt-5.3-codex" },
+    modelRegistry: {
+      async getApiKeyAndHeaders() {
+        return { ok: false, error: "No API key found for openai-codex." };
+      },
+    },
+    sessionManager: {
+      getSessionId() {
+        return "session-no-auth";
+      },
+    },
+  };
+}
+
 test("cancelBackgroundJob only targets active jobs and findBackgroundJob supports active-only lookup", async () => {
   const root = makeTempDir("pi-codex-job-cancel-");
   const homeDir = path.join(root, "home");
@@ -267,6 +301,39 @@ test("cancelBackgroundJob only targets active jobs and findBackgroundJob support
     });
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("background launches fail fast when the selected model has no available auth", async () => {
+  const root = makeTempDir("pi-codex-no-auth-launch-");
+  const homeDir = path.join(root, "home");
+  const workspaceRoot = createGitRepo("pi-codex-no-auth-workspace-");
+  const ctx = createNoAuthContext(workspaceRoot);
+  const pi = createPiStub();
+
+  try {
+    await withHomeDir(homeDir, async () => {
+      await assert.rejects(
+        () => launchBackgroundReadonlyTaskJob(pi, ctx, DUMMY_SETTINGS, "reply with exactly noauth"),
+        /No API key found for openai-codex/i,
+      );
+      assert.equal(findBackgroundJob(workspaceRoot), null);
+
+      await assert.rejects(
+        () => launchBackgroundResearchJob(pi, ctx, DUMMY_SETTINGS, "investigate auth"),
+        /No API key found for openai-codex/i,
+      );
+      assert.equal(findBackgroundJob(workspaceRoot), null);
+
+      await assert.rejects(
+        () => launchBackgroundReviewJob(ctx, DUMMY_SETTINGS, "review", { scope: "working-tree" }),
+        /No API key found for openai-codex/i,
+      );
+      assert.equal(findBackgroundJob(workspaceRoot), null);
+    });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(workspaceRoot, { recursive: true, force: true });
   }
 });
 

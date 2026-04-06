@@ -1,6 +1,9 @@
 import { backgroundJobSubject, isResearchBackgroundJob, isTaskBackgroundJob } from "./job-types.js";
 import type { CodexBackgroundJob } from "./job-types.js";
 
+const INLINE_COMPLETION_MAX_CHARS = 2_400;
+const INLINE_COMPLETION_MAX_LINES = 48;
+
 function formatWhen(value: string | undefined): string {
   return value ?? "n/a";
 }
@@ -217,6 +220,86 @@ function summarizeText(text: string, limit = 320): string {
   return `${singleLine.slice(0, limit - 3)}...`;
 }
 
+function countLines(text: string): number {
+  return text.split("\n").length;
+}
+
+function summarizeMarkdownExcerpt(markdown: string, maxChars = 700, maxLines = 8): string {
+  const lines = markdown
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim().length > 0);
+
+  if (lines.length === 0) {
+    return "";
+  }
+
+  const excerpt: string[] = [];
+  let usedChars = 0;
+
+  for (const line of lines) {
+    const compact = line.trim();
+    const normalized = compact.length > 220 ? `${compact.slice(0, 217).trimEnd()}...` : compact;
+    const projectedChars = usedChars + normalized.length + (excerpt.length > 0 ? 1 : 0);
+    if (excerpt.length > 0 && projectedChars > maxChars) {
+      break;
+    }
+    excerpt.push(normalized);
+    usedChars = projectedChars;
+    if (excerpt.length >= maxLines) {
+      break;
+    }
+  }
+
+  const preview = excerpt.join("\n");
+  if (!preview) {
+    return "";
+  }
+
+  return excerpt.length < lines.length ? `${preview}\n...` : preview;
+}
+
+function shouldInlineFullCompletion(job: CodexBackgroundJob, fullResultMarkdown: string): boolean {
+  if (job.status !== "completed") {
+    return false;
+  }
+
+  const trimmed = fullResultMarkdown.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  return trimmed.length <= INLINE_COMPLETION_MAX_CHARS && countLines(trimmed) <= INLINE_COMPLETION_MAX_LINES;
+}
+
+function extractFinalAnswerPreview(fullResultMarkdown: string | undefined, fallbackSummary: string | undefined): string {
+  const markdown = fullResultMarkdown?.trim() ?? "";
+  if (markdown) {
+    const finalAnswerIndex = markdown.lastIndexOf("\nFinal answer:");
+    if (finalAnswerIndex >= 0) {
+      const answer = markdown.slice(finalAnswerIndex + "\nFinal answer:".length).trim();
+      if (answer) {
+        const preview = summarizeMarkdownExcerpt(answer, 700, 8);
+        if (preview) {
+          return preview;
+        }
+      }
+    }
+  }
+
+  return summarizeText(fallbackSummary ?? "", 700);
+}
+
+function completionNextStepLine(job: CodexBackgroundJob): string {
+  return job.jobClass === "review"
+    ? `Use \`/codex:result ${job.id}\` for the full stored review.`
+    : job.jobClass === "research"
+      ? `Use \`/codex:result ${job.id}\` for the full stored research result.`
+      : job.profile === "write"
+        ? `Use \`/codex:result ${job.id}\` for the full stored task result or \`/codex:apply ${job.id}\` to apply the stored patch.`
+        : `Use \`/codex:result ${job.id}\` for the full stored task result.`;
+}
+
 export function backgroundJobTitle(job: CodexBackgroundJob, includeJobSuffix = false): string {
   const base = job.jobClass === "review"
     ? (job.kind === "adversarial-review" ? "Codex Adversarial Review" : "Codex Review")
@@ -262,7 +345,12 @@ export function backgroundJobReportVariant(job: CodexBackgroundJob): "info" | "s
 export function renderBackgroundJobCompletionMarkdown(
   job: CodexBackgroundJob,
   summaryText?: string,
+  fullResultMarkdown?: string,
 ): string {
+  if (fullResultMarkdown && shouldInlineFullCompletion(job, fullResultMarkdown)) {
+    return fullResultMarkdown.endsWith("\n") ? fullResultMarkdown : `${fullResultMarkdown}\n`;
+  }
+
   const subjectLabel = job.jobClass === "review" ? "Target" : "Request";
   const lines = [
     `# ${backgroundJobNotificationTitle(job)}`,
@@ -284,21 +372,19 @@ export function renderBackgroundJobCompletionMarkdown(
   }
 
   if (summaryText?.trim()) {
-    lines.push("", "Summary:", "", summarizeText(summaryText));
+    if (job.jobClass === "review") {
+      lines.push("", "Summary:", "", summarizeText(summaryText));
+    } else {
+      lines.push("", "Preview:", "", extractFinalAnswerPreview(fullResultMarkdown, summaryText));
+      if (fullResultMarkdown && !shouldInlineFullCompletion(job, fullResultMarkdown)) {
+        lines.push("", "Result was too long to inline fully in the completion notification.");
+      }
+    }
   } else if (job.errorMessage?.trim()) {
     lines.push("", "Error:", "", summarizeText(job.errorMessage));
   }
 
-  lines.push(
-    "",
-    job.jobClass === "review"
-      ? `Use \`/codex:result ${job.id}\` for the full stored review.`
-      : job.jobClass === "research"
-        ? `Use \`/codex:result ${job.id}\` for the full stored research result.`
-        : job.profile === "write"
-          ? `Use \`/codex:result ${job.id}\` for the full stored task result or \`/codex:apply ${job.id}\` to apply the stored patch.`
-          : `Use \`/codex:result ${job.id}\` for the full stored task result.`,
-  );
+  lines.push("", completionNextStepLine(job));
 
   return `${lines.join("\n").trimEnd()}\n`;
 }

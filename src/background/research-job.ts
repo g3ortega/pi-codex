@@ -7,7 +7,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-cod
 import type { CodexSettings } from "../config/codex-settings.js";
 import { renderStoredResearchMarkdown } from "../research/research-render.js";
 import { getCurrentBranch, getRepoRoot } from "../review/git-context.js";
-import { resolveModel } from "../review/review-runner.js";
+import { requireModelAuth, resolveModel } from "../review/review-runner.js";
 import {
   appendJobLog,
   createResearchBackgroundJob,
@@ -167,6 +167,7 @@ export async function launchBackgroundResearchJob(
   const branch = safeBranch(repoRoot);
   const toolPlan = buildBackgroundResearchToolPlan(pi);
   const model = resolveModel(ctx, settings, explicitModel);
+  await requireModelAuth(ctx, model);
   const id = generateJobId("research");
   const createdAt = nowIso();
   const sessionDir = getJobSessionDir(repoRoot, id);

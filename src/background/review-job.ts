@@ -24,6 +24,7 @@ import { collectReviewContext, resolveReviewTarget } from "../review/git-context
 import { renderStoredReviewMarkdown } from "../review/review-render.js";
 import {
   executePreparedReviewRun,
+  requireModelAuth,
   resolveModel,
   type ReviewCommandOptions,
 } from "../review/review-runner.js";
@@ -98,6 +99,7 @@ export async function launchBackgroundReviewJob(
   });
   const reviewContext = collectReviewContext(ctx.cwd, target);
   const model = resolveModel(ctx, settings, options.modelSpec);
+  await requireModelAuth(ctx, model);
   const id = generateJobId(kind === "adversarial-review" ? "adversarial-review" : "review");
   const createdAt = nowIso();
 

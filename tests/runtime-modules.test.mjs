@@ -5,10 +5,20 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import registerCodexExtension from "../extensions/core/index.ts";
 import { splitLeadingOptionTokens, splitShellLikeArgs } from "../src/runtime/arg-parser.ts";
 import { findProtectedPathInBashCommand, findProtectedPathMatch } from "../src/runtime/path-protection.ts";
 import { findStoredReview, listStoredReviews, storeReviewRun } from "../src/runtime/review-store.ts";
 import { parseTaskCommandOptions } from "../src/runtime/task-command-options.ts";
+import {
+  createResearchBackgroundJob,
+  getJobLogFile,
+  getJobResultFile,
+  getJobResultJsonFile,
+  getJobSessionDir,
+  getJobSnapshotFile,
+  writeResearchJobResult,
+} from "../src/runtime/job-store.ts";
 import {
   getCodexHome,
   getWorkspaceJobsDir,
@@ -32,6 +42,20 @@ function cleanupWorkspace(cwd) {
   fs.rmSync(cwd, { recursive: true, force: true });
 }
 
+async function withHomeDir(homeDir, fn) {
+  const previousHome = process.env.HOME;
+  process.env.HOME = homeDir;
+  try {
+    return await fn();
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHome;
+    }
+  }
+}
+
 function git(cwd, args) {
   const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
   if (result.status !== 0) {
@@ -50,6 +74,64 @@ function createGitRepo(prefix) {
   git(repoDir, ["add", ".gitignore", "tracked.txt"]);
   git(repoDir, ["commit", "-m", "initial"]);
   return repoDir;
+}
+
+function iso(offsetMs = 0) {
+  return new Date(Date.now() + offsetMs).toISOString();
+}
+
+function buildResearchJob(workspaceRoot, overrides = {}) {
+  const id = overrides.id ?? "research-job";
+  return {
+    id,
+    jobClass: "research",
+    kind: "research",
+    workspaceRoot,
+    cwd: workspaceRoot,
+    repoRoot: workspaceRoot,
+    branch: "main",
+    originSessionId: "session-a",
+    originSessionFile: "/tmp/session-a.jsonl",
+    originCwd: workspaceRoot,
+    request: "investigate background mode",
+    requestSummary: "investigate background mode",
+    modelProvider: "openai-codex",
+    modelId: "gpt-5.3-codex",
+    modelSpec: "openai-codex/gpt-5.3-codex",
+    createdAt: iso(),
+    updatedAt: iso(),
+    status: "queued",
+    phase: "queued",
+    requestedToolNames: ["read", "find"],
+    activeToolNames: [],
+    safeBuiltinTools: ["read", "grep", "find", "ls"],
+    activeWebTools: [],
+    inactiveAvailableWebTools: [],
+    extensionPaths: [],
+    sessionDir: getJobSessionDir(workspaceRoot, id),
+    executionCwd: workspaceRoot,
+    snapshotFile: getJobSnapshotFile(workspaceRoot, id),
+    resultFile: getJobResultFile(workspaceRoot, id),
+    resultJsonFile: getJobResultJsonFile(workspaceRoot, id),
+    logFile: getJobLogFile(workspaceRoot, id),
+    ...overrides,
+  };
+}
+
+function buildResearchSnapshot(workspaceRoot, overrides = {}) {
+  return {
+    kind: "research",
+    repoRoot: workspaceRoot,
+    branch: "main",
+    request: "investigate background mode",
+    modelSpec: "openai-codex/gpt-5.3-codex",
+    requestedToolNames: ["read", "find"],
+    safeBuiltinTools: ["read", "grep", "find", "ls"],
+    activeWebTools: [],
+    inactiveAvailableWebTools: [],
+    extensionPaths: [],
+    ...overrides,
+  };
 }
 
 function buildCompletedWriteTaskJob(repoDir, overrides = {}) {
@@ -505,5 +587,288 @@ test("stored background write-task patches refuse to apply after the live repo h
     } catch {}
     fs.rmSync(patchDir, { recursive: true, force: true });
     fs.rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test("input fallback routes /codex:result directly when normal slash dispatch misses", async () => {
+  const repoDir = createGitRepo("pi-codex-input-result-");
+  const homeDir = makeTempDir("pi-codex-home-");
+
+  try {
+    await withHomeDir(homeDir, async () => {
+      const reports = [];
+      const handlers = new Map();
+      const commands = new Map();
+
+      registerCodexExtension({
+        registerCommand(name, options) {
+          commands.set(name, options);
+        },
+        on(name, handler) {
+          handlers.set(name, handler);
+        },
+        registerMessageRenderer() {},
+        sendMessage(message, options) {
+          reports.push({ message, options });
+        },
+        sendUserMessage() {
+          throw new Error("sendUserMessage should not be called for result fallback");
+        },
+        getActiveTools() {
+          return ["read", "grep", "find", "ls"];
+        },
+        getAllTools() {
+          return [];
+        },
+        events: {
+          emit() {},
+        },
+      });
+
+      const job = buildResearchJob(repoDir, {
+        id: "research-fallback",
+        status: "completed",
+        phase: "completed",
+        startedAt: iso(),
+        completedAt: iso(1000),
+      });
+      createResearchBackgroundJob(job, buildResearchSnapshot(repoDir, { request: "fallback routing" }));
+      writeResearchJobResult(
+        repoDir,
+        job.id,
+        {
+          request: "fallback routing",
+          finalText: "RESULT_FROM_FALLBACK",
+          activeToolNames: ["read", "find"],
+          missingToolNames: [],
+        },
+        "# Codex Research\n\nRESULT_FROM_FALLBACK\n",
+      );
+
+      const inputHandler = handlers.get("input");
+      assert.equal(typeof inputHandler, "function");
+
+      const result = await inputHandler(
+        {
+          type: "input",
+          text: `/codex:result ${job.id}`,
+          source: "interactive",
+        },
+        {
+          ui: {
+            notify() {},
+            setStatus() {},
+            theme: {
+              fg(_token, value) {
+                return value;
+              },
+              bg(_token, value) {
+                return value;
+              },
+              bold(value) {
+                return value;
+              },
+            },
+          },
+          hasUI: false,
+          cwd: repoDir,
+          sessionManager: {
+            getSessionId() {
+              return "session-a";
+            },
+            getSessionFile() {
+              return "/tmp/session-a.jsonl";
+            },
+          },
+          modelRegistry: {},
+          model: {
+            provider: "openai-codex",
+            id: "gpt-5.3-codex",
+          },
+          isIdle() {
+            return true;
+          },
+          signal: undefined,
+          abort() {},
+          hasPendingMessages() {
+            return false;
+          },
+          shutdown() {},
+          getContextUsage() {
+            return undefined;
+          },
+          compact() {},
+          getSystemPrompt() {
+            return "";
+          },
+        },
+      );
+
+      assert.deepEqual(result, { action: "handled" });
+      assert.ok(commands.has("codex:result"));
+      assert.ok(
+        reports.some((entry) => String(entry.message.content).includes("RESULT_FROM_FALLBACK")),
+        "fallback input route should emit the stored result as a report",
+      );
+    });
+  } finally {
+    fs.rmSync(repoDir, { recursive: true, force: true });
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("print-mode task fallback cleans up stale waiters after an error", async () => {
+  const repoDir = createGitRepo("pi-codex-print-waiter-");
+  const homeDir = makeTempDir("pi-codex-home-");
+  const previousArgv = [...process.argv];
+  process.argv = [...process.argv, "-p"];
+
+  try {
+    const moduleUrl = new URL("../extensions/core/index.ts", import.meta.url).href;
+    const { default: registerPrintModeCodexExtension } = await import(`${moduleUrl}?print-waiter=${Date.now()}`);
+
+    await withHomeDir(homeDir, async () => {
+      const reports = [];
+      const handlers = new Map();
+      let sendUserMessageCount = 0;
+      let authMode = "fail";
+
+      registerPrintModeCodexExtension({
+        registerCommand() {},
+        on(name, handler) {
+          handlers.set(name, handler);
+        },
+        registerMessageRenderer() {},
+        sendMessage(message, options) {
+          reports.push({ message, options });
+        },
+        sendUserMessage() {
+          sendUserMessageCount += 1;
+        },
+        getActiveTools() {
+          return ["read", "grep", "find", "ls"];
+        },
+        getAllTools() {
+          return [];
+        },
+        events: {
+          emit() {},
+        },
+      });
+
+      const inputHandler = handlers.get("input");
+      const turnEndHandler = handlers.get("turn_end");
+      assert.equal(typeof inputHandler, "function");
+      assert.equal(typeof turnEndHandler, "function");
+
+      const failingPromise = inputHandler(
+        {
+          type: "input",
+          text: "/codex:task --background --readonly fail auth preflight",
+          source: "interactive",
+        },
+        {
+          hasUI: false,
+          cwd: repoDir,
+          isIdle() {
+            return true;
+          },
+          model: {
+            provider: "openai-codex",
+            id: "gpt-5.3-codex",
+          },
+          modelRegistry: {
+            async getApiKeyAndHeaders() {
+              if (authMode === "fail") {
+                return { ok: false, error: "No API key found for openai-codex." };
+              }
+              return { ok: true, apiKey: "unused", headers: {} };
+            },
+          },
+          sessionManager: {
+            getSessionId() {
+              return "session-a";
+            },
+            getSessionFile() {
+              return "/tmp/session-a.jsonl";
+            },
+          },
+          ui: {
+            notify() {},
+            setStatus() {},
+            theme: {
+              fg(_token, value) {
+                return value;
+              },
+            },
+          },
+        },
+      );
+      await failingPromise;
+      assert.ok(reports.some((entry) => String(entry.message.content).includes("No API key found for openai-codex.")));
+
+      authMode = "ok";
+      let resolved = false;
+      const reportsAfterFailure = reports.length;
+      const secondPromise = inputHandler(
+        {
+          type: "input",
+          text: "/codex:task --readonly inspect auth refresh",
+          source: "interactive",
+        },
+        {
+          hasUI: false,
+          cwd: repoDir,
+          isIdle() {
+            return true;
+          },
+          model: {
+            provider: "openai-codex",
+            id: "gpt-5.3-codex",
+          },
+          modelRegistry: {
+            async getApiKeyAndHeaders() {
+              if (authMode === "fail") {
+                return { ok: false, error: "No API key found for openai-codex." };
+              }
+              return { ok: true, apiKey: "unused", headers: {} };
+            },
+          },
+          sessionManager: {
+            getSessionId() {
+              return "session-a";
+            },
+            getSessionFile() {
+              return "/tmp/session-a.jsonl";
+            },
+          },
+          ui: {
+            notify() {},
+            setStatus() {},
+            theme: {
+              fg(_token, value) {
+                return value;
+              },
+            },
+          },
+        },
+      ).then(() => {
+        resolved = true;
+      });
+
+      await Promise.resolve();
+      assert.equal(sendUserMessageCount, 1);
+      assert.equal(resolved, false);
+
+      await turnEndHandler();
+      await secondPromise;
+      assert.equal(resolved, true);
+      assert.equal(reports.length, reportsAfterFailure + 1);
+      assert.match(String(reports.at(-1)?.message.content), /injected into the current PI session/i);
+    });
+  } finally {
+    process.argv = previousArgv;
+    fs.rmSync(repoDir, { recursive: true, force: true });
+    fs.rmSync(homeDir, { recursive: true, force: true });
   }
 });

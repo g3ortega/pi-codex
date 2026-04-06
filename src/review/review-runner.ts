@@ -246,13 +246,7 @@ async function runModelCompletion(
   prompt: string,
   externalSignal?: AbortSignal,
 ): Promise<string> {
-  const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-  if (!auth.ok) {
-    throw new Error(auth.error);
-  }
-  if (!auth.apiKey) {
-    throw new Error(`No API key or OAuth token is available for ${model.provider}/${model.id}.`);
-  }
+  const auth = await requireModelAuth(ctx, model);
 
   const request = async (signal?: AbortSignal): Promise<string> => {
     const message: Message = {
@@ -314,6 +308,24 @@ async function runModelCompletion(
   }
 
   return result.value;
+}
+
+export async function requireModelAuth(
+  ctx: Pick<ExtensionCommandContext, "modelRegistry">,
+  model: Model<any>,
+): Promise<{ apiKey: string; headers: Record<string, string> | undefined }> {
+  const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+  if (!auth.ok) {
+    throw new Error(auth.error);
+  }
+  if (!auth.apiKey) {
+    throw new Error(`No API key or OAuth token is available for ${model.provider}/${model.id}.`);
+  }
+
+  return {
+    apiKey: auth.apiKey,
+    headers: auth.headers,
+  };
 }
 
 export function buildStructuredReviewPrompt(
