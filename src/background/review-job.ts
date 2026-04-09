@@ -16,6 +16,7 @@ import {
   getJobSessionDir,
   getJobSnapshotFile,
   readBackgroundJob,
+  readBackgroundJobById,
   readReviewSnapshot,
   updateBackgroundJob,
   writeReviewJobResult,
@@ -58,6 +59,7 @@ type ReviewTurnWaitOptions = {
   idleTimeoutMs?: number;
   maxToolCalls?: number;
   sessionDir?: string;
+  scopeRoot: string;
   activateToolNames?: string[];
   onDispatch?: () => void;
   onLog?: (message: string) => void;
@@ -69,6 +71,7 @@ type AgenticStructuredReviewOptions = {
   focusText?: string;
   reviewInput: string;
   seedInspectionNotes?: string;
+  scopeRoot: string;
   activeToolNames: string[];
   activeWebTools: string[];
   timeoutMs: number;
@@ -283,6 +286,7 @@ function buildAgenticReviewPrompt(
 
 type PendingReviewTurnRecord = {
   prompt: string;
+  scopeRoot: string;
   awaitingAgentEnd: boolean;
   matchedAgentStart: boolean;
   assignedTurnIndex: number | null;
@@ -304,6 +308,15 @@ let foregroundReviewReadOnlyDepth = 0;
 
 export function isForegroundReviewReadOnlyActive(): boolean {
   return foregroundReviewReadOnlyDepth > 0;
+}
+
+export function getForegroundReviewReadOnlyScopeRoot(): string | null {
+  for (const record of pendingReviewTurns) {
+    if (record.foregroundReadOnlyActive || record.toolSurfaceActive) {
+      return record.scopeRoot;
+    }
+  }
+  return null;
 }
 
 function activateForegroundReviewTurn(pi: ExtensionAPI, record: PendingReviewTurnRecord): void {
@@ -400,6 +413,35 @@ function ensureReviewTurnEventBridge(pi: ExtensionAPI): void {
 
     const text = terminalMessage ? extractAssistantText([terminalMessage]) : "";
     record.resolveOnce(text);
+  });
+
+  pi.on("agent_end", async (event) => {
+    const record = pendingReviewTurns[0];
+    if (!record?.awaitingAgentEnd) {
+      return;
+    }
+    if (!record.matchedAgentStart && !record.toolSurfaceActive && record.assignedTurnIndex == null) {
+      return;
+    }
+
+    const text =
+      extractAssistantText(event.messages as AgentMessageLike[] | undefined) ||
+      (() => {
+        const lastMessage = (event.messages as AgentMessageLike[] | undefined)?.at(-1);
+        return lastMessage ? extractAssistantText([lastMessage]) : "";
+      })();
+    if (text) {
+      if (record.assignedTurnIndex == null) {
+        record.onLog?.("Accepted agent_end fallback without matching turn_end.");
+      }
+      record.resolveOnce(text);
+      return;
+    }
+    if (record.cancellationRequested()) {
+      record.rejectOnce(new Error("Background review cancelled."));
+      return;
+    }
+    record.rejectOnce(new Error("Background review finished without a textual assistant result."));
   });
 }
 
@@ -570,6 +612,7 @@ export async function executeForegroundReviewRun(
     focusText: options.focusText,
     reviewInput: reviewContext.content,
     seedInspectionNotes,
+    scopeRoot: reviewContext.repoRoot,
     activeToolNames,
     activeWebTools,
     timeoutMs: MAX_FOREGROUND_AGENTIC_REVIEW_DURATION_MS,
@@ -610,6 +653,32 @@ function markCancelled(workspaceRoot: string, jobId: string, reason: string): Re
   return next;
 }
 
+function markFailed(workspaceRoot: string, jobId: string, reason: string): ReviewBackgroundJob {
+  const failedAt = nowIso();
+  const next = updateBackgroundJob(workspaceRoot, jobId, (current) => ({
+    ...current,
+    status: "failed",
+    phase: "failed",
+    updatedAt: failedAt,
+    completedAt: failedAt,
+    runnerPid: null,
+    errorMessage: reason,
+  })) as ReviewBackgroundJob;
+  appendJobLog(workspaceRoot, jobId, `Background review failed: ${reason}`);
+  return next;
+}
+
+export function finalizeDetachedReviewRunnerExit(workspaceRoot: string, jobId: string, reason: string): ReviewBackgroundJob | null {
+  const current = readBackgroundJobById(workspaceRoot, jobId);
+  if (!current || current.jobClass !== "review" || current.status === "completed" || current.status === "failed" || current.status === "cancelled" || current.status === "lost") {
+    return null;
+  }
+  if (current.status === "cancelling") {
+    return markCancelled(workspaceRoot, jobId, reason);
+  }
+  return markFailed(workspaceRoot, jobId, reason);
+}
+
 async function waitForReviewAgentTurn(
   pi: ExtensionAPI,
   ctx: ExtensionCommandContext,
@@ -621,6 +690,7 @@ async function waitForReviewAgentTurn(
     idleTimeoutMs = MAX_REVIEW_JOB_IDLE_MS,
     maxToolCalls,
     sessionDir,
+    scopeRoot,
     activateToolNames = [],
     onDispatch,
     onLog,
@@ -705,6 +775,7 @@ async function waitForReviewAgentTurn(
       };
       const record: PendingReviewTurnRecord = {
         prompt,
+        scopeRoot,
         awaitingAgentEnd: true,
         matchedAgentStart: false,
         assignedTurnIndex: null,
@@ -758,6 +829,7 @@ async function executeAgenticInspectionNotes(
     idleTimeoutMs: options.idleTimeoutMs,
     maxToolCalls: options.maxToolCalls,
     sessionDir: options.sessionDir,
+    scopeRoot: options.scopeRoot,
     activateToolNames: options.activeToolNames,
     onLog: options.onLog,
     deliverAs: options.deliverAs,
@@ -799,6 +871,18 @@ export async function runDetachedReviewJob(
   let timeoutHandle: NodeJS.Timeout | null = null;
   let runningPhase = inspectionPassEnabled ? "preparing-tools" : "model-completion";
   let rejectAgentTurn: ((error: Error) => void) | null = null;
+  let terminalStatePersisted = false;
+  const finalizeAbruptExit = (reason: string) => {
+    if (terminalStatePersisted) {
+      return;
+    }
+    terminalStatePersisted = true;
+    try {
+      finalizeDetachedReviewRunnerExit(job.workspaceRoot, job.id, reason);
+    } catch {
+      // Best effort only during process teardown.
+    }
+  };
   const signalHandler = (signal: NodeJS.Signals) => {
     cancellationRequested = true;
     rejectAgentTurn?.(new Error(`Background review received ${signal}.`));
@@ -810,13 +894,35 @@ export async function runDetachedReviewJob(
     abortController.abort(new Error(`Background review received ${signal}.`));
     try {
       markCancelled(job.workspaceRoot, job.id, `Runner received ${signal}; marking job cancelled.`);
+      terminalStatePersisted = true;
     } catch {
       // Best effort during process teardown.
     }
   };
+  const terminateAfterFatalProcessError = () => {
+    process.exitCode = 1;
+    setImmediate(() => {
+      process.exit(1);
+    });
+  };
+  const unhandledRejectionHandler = (reason: unknown) => {
+    const message = reason instanceof Error ? reason.message : String(reason);
+    finalizeAbruptExit(`Background review worker hit an unhandled rejection during ${runningPhase}: ${message}`);
+    terminateAfterFatalProcessError();
+  };
+  const uncaughtExceptionHandler = (error: Error) => {
+    finalizeAbruptExit(`Background review worker crashed during ${runningPhase}: ${error.message}`);
+    terminateAfterFatalProcessError();
+  };
+  const beforeExitHandler = () => {
+    finalizeAbruptExit(`Background review worker exited during ${runningPhase} before recording a terminal result.`);
+  };
 
   process.once("SIGTERM", signalHandler);
   process.once("SIGINT", signalHandler);
+  process.once("unhandledRejection", unhandledRejectionHandler);
+  process.once("uncaughtException", uncaughtExceptionHandler);
+  process.once("beforeExit", beforeExitHandler);
 
   const heartbeat = setInterval(() => {
     try {
@@ -921,6 +1027,7 @@ export async function runDetachedReviewJob(
           focusText: snapshot.focusText,
           reviewInput: snapshot.reviewInput,
           seedInspectionNotes,
+          scopeRoot: snapshot.repoRoot,
           activeToolNames,
           activeWebTools: snapshot.activeWebTools ?? [],
           timeoutMs,
@@ -965,6 +1072,7 @@ export async function runDetachedReviewJob(
 
     const current = readBackgroundJob(ctx.cwd, job.id);
     if (current?.status === "cancelled" || current?.status === "cancelling" || cancellationRequested) {
+      terminalStatePersisted = true;
       return markCancelled(job.workspaceRoot, job.id, "Background review cancelled before persisting a result.");
     }
 
@@ -1006,25 +1114,17 @@ export async function runDetachedReviewJob(
       };
     }) as ReviewBackgroundJob;
     appendJobLog(job.workspaceRoot, job.id, `Background review completed with verdict ${reviewRun.result?.verdict ?? "parse-error"}.`);
+    terminalStatePersisted = true;
     return completed;
   } catch (error) {
     const current = readBackgroundJob(ctx.cwd, job.id);
     if ((current?.status === "cancelled" || current?.status === "cancelling" || cancellationRequested) && !timeoutRequested) {
+      terminalStatePersisted = true;
       return markCancelled(job.workspaceRoot, job.id, "Background review cancelled.");
     }
 
-    const message = error instanceof Error ? error.message : String(error);
-    const failedAt = nowIso();
-    const failed = updateBackgroundJob(job.workspaceRoot, job.id, (existing) => ({
-      ...existing,
-      status: "failed",
-      phase: "failed",
-      updatedAt: failedAt,
-      completedAt: failedAt,
-      runnerPid: null,
-      errorMessage: message,
-    })) as ReviewBackgroundJob;
-    appendJobLog(job.workspaceRoot, job.id, `Background review failed: ${message}`);
+    terminalStatePersisted = true;
+    markFailed(job.workspaceRoot, job.id, error instanceof Error ? error.message : String(error));
     throw error;
   } finally {
     clearInterval(heartbeat);
@@ -1033,6 +1133,9 @@ export async function runDetachedReviewJob(
     }
     process.removeListener("SIGTERM", signalHandler);
     process.removeListener("SIGINT", signalHandler);
+    process.removeListener("unhandledRejection", unhandledRejectionHandler);
+    process.removeListener("uncaughtException", uncaughtExceptionHandler);
+    process.removeListener("beforeExit", beforeExitHandler);
   }
 }
 

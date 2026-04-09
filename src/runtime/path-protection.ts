@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { isAbsolute, join, relative, resolve } from "node:path";
 
 import { splitShellLikeArgs } from "./arg-parser.js";
 
@@ -20,6 +20,15 @@ type BashConfirmWhitelistData = {
 
 function normalizePathLike(value: string): string {
   return value.replace(/\\/g, "/").trim();
+}
+
+function resolveExistingOrLexicalPath(baseRoot: string, pathValue: string): string {
+  const lexicalPath = isAbsolute(pathValue) ? resolve(pathValue) : resolve(baseRoot, pathValue);
+  try {
+    return realpathSync(lexicalPath);
+  } catch {
+    return lexicalPath;
+  }
 }
 
 function escapeRegex(text: string): string {
@@ -60,6 +69,169 @@ export function findProtectedPathMatch(pathValue: string, protectedPaths: string
       return protectedEntry;
     }
   }
+  return null;
+}
+
+function isPathInsideRoot(scopeRoot: string, resolutionCwd: string, candidatePath: string): boolean {
+  const resolvedRoot = resolveExistingOrLexicalPath(scopeRoot, scopeRoot);
+  const resolvedCandidate = resolveExistingOrLexicalPath(resolutionCwd, candidatePath);
+  const relativePath = relative(resolvedRoot, resolvedCandidate);
+  return relativePath === "" || (!relativePath.startsWith("..") && !isAbsolute(relativePath));
+}
+
+function looksLikeResolvablePath(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (trimmed === "." || trimmed === "..") {
+    return true;
+  }
+  if (isAbsolute(trimmed)) {
+    return true;
+  }
+  if (trimmed.startsWith("./") || trimmed.startsWith("../")) {
+    return true;
+  }
+  if (/[\\/]/.test(trimmed)) {
+    return true;
+  }
+  return trimmed.split(/[\\/]+/).some((segment) => segment === "." || segment === "..");
+}
+
+function extractReadOnlyToolPath(input: unknown): string | null {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return null;
+  }
+  const pathValue = (input as { path?: unknown }).path;
+  return typeof pathValue === "string" && pathValue.trim() ? pathValue.trim() : null;
+}
+
+export function findReadOnlyScopeViolation(toolName: string, input: unknown, scopeRoot: string, resolutionCwd = scopeRoot): string | null {
+  if (!["read", "grep", "find", "ls"].includes(toolName)) {
+    return null;
+  }
+  const targetPath = extractReadOnlyToolPath(input);
+  if (!targetPath) {
+    return null;
+  }
+  return isPathInsideRoot(scopeRoot, resolutionCwd, targetPath) ? null : targetPath;
+}
+
+function collectFindPaths(tokens: string[]): string[] {
+  const paths: string[] = [];
+  let index = 1;
+  while (index < tokens.length && tokens[index].startsWith("-")) {
+    const token = tokens[index];
+    if (token === "-D" || token === "-O") {
+      index += 2;
+      continue;
+    }
+    index += 1;
+  }
+  for (; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token.startsWith("-") || token === "!" || token === "(" || token === ")" || token === ",") {
+      break;
+    }
+    paths.push(token);
+  }
+  return paths;
+}
+
+function collectLsPaths(tokens: string[]): string[] {
+  return tokens.slice(1).filter((token) => !token.startsWith("-"));
+}
+
+function collectSedPaths(tokens: string[]): string[] {
+  const paths: string[] = [];
+  let consumedInlineScript = false;
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token === "-n" || token === "--quiet" || token === "--silent") {
+      continue;
+    }
+    if (token === "-e" || token === "--expression" || token === "-f" || token === "--file") {
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("-")) {
+      continue;
+    }
+    if (!consumedInlineScript) {
+      consumedInlineScript = true;
+      continue;
+    }
+    paths.push(token);
+  }
+  return paths;
+}
+
+function bashSegmentScopePaths(tokens: string[]): string[] {
+  if (tokens.length === 0) {
+    return [];
+  }
+  if (tokens[0] === "git") {
+    const paths: string[] = [];
+    for (let index = 2; index < tokens.length; index += 1) {
+      const token = tokens[index];
+      const previous = tokens[index - 1];
+      if (previous === "-C") {
+        paths.push(token);
+        continue;
+      }
+      if (/^--(?:git-dir|work-tree)=/.test(token)) {
+        const [, value = ""] = token.split("=", 2);
+        if (value) {
+          paths.push(value);
+        }
+      }
+    }
+    const separatorIndex = tokens.indexOf("--");
+    if (separatorIndex >= 0) {
+      for (const token of tokens.slice(separatorIndex + 1)) {
+        if (looksLikeResolvablePath(token)) {
+          paths.push(token);
+        }
+      }
+    }
+    return paths;
+  }
+  if (tokens[0] === "find") {
+    return collectFindPaths(tokens);
+  }
+  if (tokens[0] === "ls") {
+    return collectLsPaths(tokens);
+  }
+  if (tokens[0] === "sed") {
+    return collectSedPaths(tokens);
+  }
+  return [];
+}
+
+export function findReadOnlyScopeViolationInBashCommand(command: string, scopeRoot: string, resolutionCwd = scopeRoot): string | null {
+  const trimmed = command.trim();
+  if (!trimmed || !isLikelyReadOnlyShellCommand(trimmed)) {
+    return null;
+  }
+
+  const segments = splitReadOnlyShellSegments(trimmed);
+  if (!segments) {
+    return null;
+  }
+
+  for (const segment of segments) {
+    const tokens = splitShellLikeArgs(segment);
+    if (tokens.length === 0) {
+      continue;
+    }
+    for (const token of bashSegmentScopePaths(tokens)) {
+      if (looksLikeResolvablePath(token) && !isPathInsideRoot(scopeRoot, resolutionCwd, token)) {
+        return token;
+      }
+    }
+  }
+
   return null;
 }
 
@@ -221,32 +393,13 @@ function isLikelyReadOnlyShellSegment(segment: string): boolean {
     return true;
   }
 
-  if (isLikelyReadOnlySortSegment(segment)) {
-    return true;
-  }
-
   if (isLikelyReadOnlySedSegment(segment)) {
     return true;
   }
 
   return [
-    /^cat\b/,
     /^echo\b/,
-    /^head\b/,
-    /^tail\b/,
-    /^less\b/,
-    /^more\b/,
-    /^printf\b/,
-    /^grep\b/,
-    /^rg\b/,
-    /^ls\b/,
     /^pwd\b/,
-    /^stat\b/,
-    /^file\b/,
-    /^wc\b/,
-    /^uniq\b/,
-    /^cut\b/,
-    /^tr\b/,
   ].some((pattern) => pattern.test(segment));
 }
 
@@ -266,15 +419,6 @@ function isLikelyReadOnlyFindSegment(segment: string): boolean {
     || token === "-fprintf"
     || token === "-fls"
   ));
-}
-
-function isLikelyReadOnlySortSegment(segment: string): boolean {
-  const tokens = splitShellLikeArgs(segment);
-  if (tokens.length === 0 || tokens[0] !== "sort") {
-    return false;
-  }
-
-  return !tokens.some((token) => token === "-o" || /^--output(?:=|$)/.test(token));
 }
 
 const PRINT_ONLY_SED_SCRIPT = /^(?:[\d$,\s]*p\s*;?\s*)+$/;

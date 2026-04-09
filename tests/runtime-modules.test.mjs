@@ -7,10 +7,18 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import registerCodexExtension from "../extensions/core/index.ts";
-import { resolveSafeAdjacentEvidencePath, reviewAbortError } from "../src/review/review-runner.ts";
+import {
+  buildStructuredReviewPrompt,
+  buildStructuredReviewSynthesisPrompt,
+  renderCandidateReviewForSynthesis,
+  resolveSafeAdjacentEvidencePath,
+  reviewAbortError,
+} from "../src/review/review-runner.ts";
 import { splitLeadingOptionTokens, splitShellLikeArgs } from "../src/runtime/arg-parser.ts";
 import {
   ensureHeadlessReadOnlyBashWhitelisted,
+  findReadOnlyScopeViolation,
+  findReadOnlyScopeViolationInBashCommand,
   findProtectedPathInBashCommand,
   findProtectedPathMatch,
   isLikelyReadOnlyShellCommand,
@@ -563,10 +571,13 @@ test("review inspection event bridge is installed once instead of registering pe
   assert.match(source, /function ensureReviewTurnEventBridge\(pi: ExtensionAPI\)/);
   assert.match(source, /Accepted turn_start fallback without matching before_agent_start\./);
   assert.match(source, /Accepted turn_end fallback without matching before_agent_start\/turn_start\./);
+  assert.match(source, /Accepted agent_end fallback without matching turn_end\./);
+  assert.match(source, /setImmediate\(\(\) => \{\s*process\.exit\(1\);/);
   assert.match(source, /Armed foreground review inspection before dispatch\./);
   assert.match(source, /record\.previousToolNames = Array\.from\(new Set\(pi\.getActiveTools\(\)\)\)/);
   assert.match(source, /pi\.setActiveTools\(record\.desiredActiveToolNames\)/);
   assert.match(source, /pi\.on\("turn_start", async \(event\) =>/);
+  assert.match(source, /pi\.on\("agent_end", async \(event\) =>/);
   assert.match(source, /if \(!record\.matchedAgentStart\) \{/);
   assert.match(source, /record\.assignedTurnIndex = event\.turnIndex;/);
   assert.match(source, /record\.assignedTurnIndex == null/);
@@ -622,8 +633,11 @@ test("read-only shell classification allows compound git inspection but still bl
   assert.equal(isLikelyReadOnlyShellCommand("git branch -vv ; git merge-base HEAD origin/main"), true);
   assert.equal(isLikelyReadOnlyShellCommand("git remote show origin"), true);
   assert.equal(isLikelyReadOnlyShellCommand("find . -type f -name '*.rb'"), true);
-  assert.equal(isLikelyReadOnlyShellCommand("sort package.json"), true);
 
+  assert.equal(isLikelyReadOnlyShellCommand("cat package.json"), false);
+  assert.equal(isLikelyReadOnlyShellCommand("grep foo package.json"), false);
+  assert.equal(isLikelyReadOnlyShellCommand("ls -la"), false);
+  assert.equal(isLikelyReadOnlyShellCommand("sort package.json"), false);
   assert.equal(isLikelyReadOnlyShellCommand("git show HEAD:app/models/user.rb > /tmp/out.txt"), false);
   assert.equal(isLikelyReadOnlyShellCommand("git diff --output=/tmp/out.txt"), false);
   assert.equal(isLikelyReadOnlyShellCommand("git diff -- app/models/user.rb | tee /tmp/out.txt"), false);
@@ -638,6 +652,31 @@ test("read-only shell classification allows compound git inspection but still bl
   assert.equal(isLikelyReadOnlyShellCommand("git branch topic"), false);
   assert.equal(isLikelyReadOnlyShellCommand("git branch -D topic"), false);
   assert.equal(isLikelyReadOnlyShellCommand("git remote remove origin"), false);
+});
+
+test("readonly scope checks keep builtin inspection tools inside the repository root", () => {
+  const scopeRoot = "/tmp/repo";
+  assert.equal(findReadOnlyScopeViolation("read", { path: "app/models/user.rb" }, scopeRoot), null);
+  assert.equal(findReadOnlyScopeViolation("find", { path: "./config" }, scopeRoot), null);
+  assert.equal(findReadOnlyScopeViolation("grep", { path: "../shared" }, scopeRoot), "../shared");
+  assert.equal(findReadOnlyScopeViolation("ls", { path: "/tmp/repo/spec" }, scopeRoot), null);
+  assert.equal(findReadOnlyScopeViolation("find", { path: "/Users/go" }, scopeRoot), "/Users/go");
+  assert.equal(findReadOnlyScopeViolation("read", { path: "../../shared/file.ts" }, scopeRoot, "/tmp/repo/packages/app"), null);
+  assert.equal(findReadOnlyScopeViolation("ls", { path: "../outside" }, scopeRoot, "/tmp/repo/packages/app"), null);
+});
+
+test("readonly scope checks keep bash inspection commands inside the repository root", () => {
+  const scopeRoot = "/tmp/repo";
+  assert.equal(findReadOnlyScopeViolationInBashCommand("git status --short && git diff -- app/models/user.rb", scopeRoot), null);
+  assert.equal(findReadOnlyScopeViolationInBashCommand("git diff -- /tmp/repo/app/models/user.rb", scopeRoot), null);
+  assert.equal(findReadOnlyScopeViolationInBashCommand("git diff -- /Users/go", scopeRoot), "/Users/go");
+  assert.equal(findReadOnlyScopeViolationInBashCommand("git diff -- a/../../other-repo/file.txt", scopeRoot), "a/../../other-repo/file.txt");
+  assert.equal(findReadOnlyScopeViolationInBashCommand("find . -type f -name '*.rb'", scopeRoot), null);
+  assert.equal(findReadOnlyScopeViolationInBashCommand("find -H /Users/go -type f -name '*.rb'", scopeRoot), "/Users/go");
+  assert.equal(findReadOnlyScopeViolationInBashCommand("find /Users/go -type f -name '*.rb'", scopeRoot), "/Users/go");
+  assert.equal(findReadOnlyScopeViolationInBashCommand("find subdir/../../../../etc -type f", scopeRoot), "subdir/../../../../etc");
+  assert.equal(findReadOnlyScopeViolationInBashCommand("sed -n '1,10p' /Users/go/file.txt", scopeRoot), "/Users/go/file.txt");
+  assert.equal(findReadOnlyScopeViolationInBashCommand("find ../other-package -type f", scopeRoot, "/tmp/repo/packages/app"), null);
 });
 
 test("headless readonly bash whitelist helper records safe exact commands", () => {
@@ -666,7 +705,7 @@ test("protected path matching handles both file and directory-style entries", ()
 test("protected bash path detection allows read-only inspection but blocks mutations", () => {
   const protectedPaths = [".env", ".git/"];
 
-  assert.equal(findProtectedPathInBashCommand("cat .env", protectedPaths), null);
+  assert.equal(findProtectedPathInBashCommand("cat .env", protectedPaths), ".env");
   assert.equal(findProtectedPathInBashCommand("echo .env", protectedPaths), null);
   assert.equal(findProtectedPathInBashCommand("git status --short", protectedPaths), null);
   assert.equal(findProtectedPathInBashCommand("git status --short && git diff -- .env", protectedPaths), null);
@@ -1158,6 +1197,29 @@ test("review abort helper preserves explicit abort reasons", () => {
   assert.equal(reviewAbortError(cancelController.signal).message, "Background review cancellation requested.");
 
   assert.equal(reviewAbortError(undefined).message, "Review cancelled.");
+});
+
+test("structured review prompts cap oversized inspection notes and candidate review payloads", () => {
+  const oversizedInspectionNotes = `## Notes\n\n${"A".repeat(20_000)}`;
+  const oversizedCandidateReview = renderCandidateReviewForSynthesis(
+    `Summary\n\n${"B".repeat(20_000)}`,
+    null,
+    "invalid json",
+  );
+
+  const draftPrompt = buildStructuredReviewPrompt("review", "working tree diff", undefined, "## Git Status\n\nM app/models/user.rb", oversizedInspectionNotes);
+  const synthesisPrompt = buildStructuredReviewSynthesisPrompt(
+    "adversarial-review",
+    "working tree diff",
+    undefined,
+    "## Git Status\n\nM app/models/user.rb",
+    oversizedCandidateReview,
+    `### app/models/user.rb:1-20\n${"C".repeat(20_000)}`,
+    oversizedInspectionNotes,
+  );
+
+  assert.match(draftPrompt, /\[Inspection notes truncated after 12000 characters\.\]/);
+  assert.match(synthesisPrompt, /\[Candidate review truncated after 10000 characters\.\]/);
 });
 
 test("inline research enables native Codex web search through the provider payload for supported models", async () => {

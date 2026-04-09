@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { launchBackgroundResearchJob, runDetachedResearchJob } from "../src/background/research-job.ts";
-import { launchBackgroundReviewJob, runDetachedReviewJob } from "../src/background/review-job.ts";
+import { finalizeDetachedReviewRunnerExit, launchBackgroundReviewJob, runDetachedReviewJob } from "../src/background/review-job.ts";
 import { launchBackgroundReadonlyTaskJob, runDetachedTaskJob } from "../src/background/task-job.ts";
 import {
   cancelBackgroundJob,
@@ -778,6 +778,45 @@ test("detached review runner fails with a terminal error when the model call exc
       assert.equal(stored?.status, "failed");
       assert.equal(stored?.phase, "failed");
       assert.match(stored?.errorMessage ?? "", /terminal review result/i);
+    });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("abrupt detached review exits are recorded as terminal failures instead of drifting to lost", async () => {
+  const root = makeTempDir("pi-codex-review-abrupt-exit-");
+  const homeDir = path.join(root, "home");
+  const workspaceRoot = path.join(root, "workspace");
+  fs.mkdirSync(workspaceRoot, { recursive: true });
+
+  try {
+    await withHomeDir(homeDir, async () => {
+      createReviewBackgroundJob(
+        buildReviewJob(workspaceRoot, {
+          id: "review-abrupt-exit",
+          status: "running",
+          phase: "model-completion",
+          startedAt: iso(),
+          updatedAt: iso(),
+          runnerPid: 999_999,
+        }),
+        buildReviewSnapshot(workspaceRoot),
+      );
+
+      const finalized = finalizeDetachedReviewRunnerExit(
+        workspaceRoot,
+        "review-abrupt-exit",
+        "Background review worker exited during model-completion before recording a terminal result.",
+      );
+
+      assert.equal(finalized?.status, "failed");
+      assert.equal(finalized?.phase, "failed");
+      assert.match(finalized?.errorMessage ?? "", /before recording a terminal result/i);
+
+      const stored = readBackgroundJob(workspaceRoot, "review-abrupt-exit");
+      assert.equal(stored?.status, "failed");
+      assert.equal(stored?.runnerPid, null);
     });
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

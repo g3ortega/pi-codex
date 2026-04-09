@@ -6,6 +6,7 @@ import { DynamicBorder, getMarkdownTheme } from "@mariozechner/pi-coding-agent";
 import { loadCodexSettings, registerCodexSettings } from "../../src/config/codex-settings.js";
 import {
   executeForegroundReviewRun,
+  getForegroundReviewReadOnlyScopeRoot,
   isForegroundReviewReadOnlyActive,
   launchBackgroundReviewJob,
   runDetachedReviewJob,
@@ -43,6 +44,8 @@ import { parseTaskCommandOptions } from "../../src/runtime/task-command-options.
 import {
   BACKGROUND_READONLY_ENV,
   ensureHeadlessReadOnlyBashWhitelisted,
+  findReadOnlyScopeViolation,
+  findReadOnlyScopeViolationInBashCommand,
   findProtectedPathInBashCommand,
   findProtectedPathMatch,
   isLikelyReadOnlyShellCommand,
@@ -1174,6 +1177,9 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
     let blockedTarget: string | null = null;
     let builtinAlternativeReason: string | null = null;
     const readOnlyWorkerMode = process.env[BACKGROUND_READONLY_ENV] === "1" || isForegroundReviewReadOnlyActive();
+    const readOnlyScopeRoot = process.env[BACKGROUND_READONLY_ENV] === "1"
+      ? ctx.cwd
+      : (getForegroundReviewReadOnlyScopeRoot() ?? ctx.cwd);
 
     if (event.toolName === "edit" || event.toolName === "write") {
       if (readOnlyWorkerMode) {
@@ -1192,6 +1198,15 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
           reason: "Codex readonly workers are read-only. Use bash only for non-mutating inspection such as git diff/show/log/status or other read-only commands.",
         };
       }
+      if (readOnlyWorkerMode) {
+        const scopeViolation = findReadOnlyScopeViolationInBashCommand(command, readOnlyScopeRoot, ctx.cwd);
+        if (scopeViolation) {
+          return {
+            block: true,
+            reason: `Codex readonly workers can only inspect paths inside the current repository. "${scopeViolation}" is outside that boundary.`,
+          };
+        }
+      }
       if (readOnlyBashAllowed && !ctx.hasUI && !ensureHeadlessReadOnlyBashWhitelisted(ctx.cwd, command)) {
         return {
           block: true,
@@ -1203,6 +1218,16 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
         builtinAlternativeReason = builtinAlternative.reason;
       }
       blockedTarget = findProtectedPathInBashCommand(command, settings.protectedPaths);
+    }
+
+    if (readOnlyWorkerMode && ["read", "grep", "find", "ls"].includes(event.toolName)) {
+      const scopeViolation = findReadOnlyScopeViolation(event.toolName, event.input, readOnlyScopeRoot, ctx.cwd);
+      if (scopeViolation) {
+        return {
+          block: true,
+          reason: `Codex readonly workers can only inspect paths inside the current repository. "${scopeViolation}" is outside that boundary.`,
+        };
+      }
     }
 
     if (!blockedTarget && !builtinAlternativeReason) {

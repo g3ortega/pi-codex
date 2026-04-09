@@ -786,12 +786,22 @@ function interpolateReviewSynthesisPrompt(
 
 function formatInspectionNotes(inspectionNotes: string | undefined): string {
   const trimmed = inspectionNotes?.trim();
-  return trimmed && trimmed.length > 0 ? trimmed : "(none)";
+  return formatPromptSupplement(trimmed, 12_000, "Inspection notes");
 }
 
 function formatAdjacentEvidence(adjacentEvidence: string | undefined): string {
   const trimmed = adjacentEvidence?.trim();
-  return trimmed && trimmed.length > 0 ? trimmed : "(none)";
+  return formatPromptSupplement(trimmed, 8_000, "Adjacent evidence");
+}
+
+function formatPromptSupplement(value: string | undefined, maxChars: number, label: string): string {
+  if (!value || value.length === 0) {
+    return "(none)";
+  }
+  if (value.length <= maxChars) {
+    return value;
+  }
+  return `${value.slice(0, maxChars).trimEnd()}\n\n[${label} truncated after ${maxChars} characters.]`;
 }
 
 function normalizeMentalModelLine(value: unknown): number | null {
@@ -1051,19 +1061,19 @@ export function renderCandidateReviewForSynthesis(
   parseError: string | null,
 ): string {
   if (parsed) {
-    return JSON.stringify(parsed, null, 2);
+    return formatPromptSupplement(JSON.stringify(parsed, null, 2), 10_000, "Candidate review");
   }
 
   if (parseError) {
-    return [
+    return formatPromptSupplement([
       `Draft review parse error: ${parseError}`,
       "",
       "Raw draft review output:",
       rawOutput.trim(),
-    ].join("\n");
+    ].join("\n"), 10_000, "Candidate review");
   }
 
-  return rawOutput.trim();
+  return formatPromptSupplement(rawOutput.trim(), 10_000, "Candidate review");
 }
 
 export function buildStructuredReviewSynthesisPrompt(
@@ -1257,7 +1267,7 @@ function buildMentalModelsAggregationPrompt(
     TARGET_LABEL: targetLabel,
     USER_FOCUS: focusText?.trim() || "(none)",
     ADJACENT_EVIDENCE: formatAdjacentEvidence(adjacentEvidence),
-    LENS_OUTPUTS: renderedLensOutputs,
+    LENS_OUTPUTS: formatPromptSupplement(renderedLensOutputs, 14_000, "Lens outputs"),
   });
 }
 
