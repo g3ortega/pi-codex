@@ -1319,6 +1319,81 @@ test("inline research enables native Codex web search through the provider paylo
   assert.equal(afterEnd, undefined);
 });
 
+test("foreground review refuses to queue hidden follow-up turns when the session is busy", async () => {
+  const commands = new Map();
+  const reports = [];
+  const sentUserMessages = [];
+
+  registerCodexExtension({
+    registerCommand(name, options) {
+      commands.set(name, options);
+    },
+    on() {},
+    registerMessageRenderer() {},
+    sendMessage(message, options) {
+      reports.push({ message, options });
+    },
+    sendUserMessage(content) {
+      sentUserMessages.push(String(content));
+    },
+    getActiveTools() {
+      return ["read", "grep", "find", "ls", "bash"];
+    },
+    getAllTools() {
+      return [];
+    },
+    getThinkingLevel() {
+      return "medium";
+    },
+    setThinkingLevel() {},
+    events: {
+      emit() {},
+    },
+  });
+
+  const reviewCommand = commands.get("codex:review");
+  assert.equal(typeof reviewCommand?.handler, "function");
+
+  await reviewCommand.handler("--thinking high", {
+    cwd: process.cwd(),
+    hasUI: false,
+    model: { provider: "openai-codex", api: "openai-codex-responses", id: "gpt-5.3-codex" },
+    modelRegistry: {},
+    signal: undefined,
+    abort() {},
+    compact() {},
+    getContextUsage() {
+      return undefined;
+    },
+    getSystemPrompt() {
+      return "";
+    },
+    isIdle() {
+      return false;
+    },
+    hasPendingMessages() {
+      return true;
+    },
+    shutdown() {},
+    sessionManager: {
+      buildSessionContext() {
+        return { messages: [], thinkingLevel: "medium", model: null };
+      },
+    },
+    ui: {
+      notify() {},
+      setStatus() {},
+      theme: { fg: (_name, value) => value },
+    },
+  });
+
+  assert.equal(sentUserMessages.length, 0);
+  assert.equal(reports.length, 1);
+  const rendered = JSON.stringify(reports[0]);
+  assert.match(rendered, /Foreground Codex reviews only run when your current PI session is idle\./);
+  assert.match(rendered, /\/codex:review --background/);
+});
+
 test("inline task --thinking temporarily overrides the session effort for the injected turn only", async () => {
   const commands = new Map();
   const handlers = new Map();

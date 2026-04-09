@@ -377,6 +377,21 @@ async function handleReviewCommand(
     );
     return;
   }
+  const idle = typeof (ctx as { isIdle?: () => boolean }).isIdle === "function"
+    ? (ctx as { isIdle: () => boolean }).isIdle()
+    : true;
+  if (!idle) {
+    const backgroundCommand = kind === "adversarial-mental-models-review"
+      ? "/codex:adversarial_mental_models_review --background"
+      : `/codex:${kind} --background`;
+    sendReport(
+      pi,
+      reviewKindTitle(kind),
+      `# ${reviewKindTitle(kind)}\n\nForeground Codex reviews only run when your current PI session is idle.\n\nWait for the active turn to finish, or rerun with \`${backgroundCommand}\`.\n`,
+      "warning",
+    );
+    return;
+  }
   const run = await executeForegroundReviewRun(pi, ctx, settings, kind, options);
   sendReport(
     pi,

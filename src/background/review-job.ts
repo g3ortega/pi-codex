@@ -583,6 +583,12 @@ export async function executeForegroundReviewRun(
   kind: CodexReviewKind,
   options: ReviewCommandOptions,
 ): Promise<StoredReviewRun> {
+  const idle = typeof (ctx as { isIdle?: () => boolean }).isIdle === "function"
+    ? (ctx as { isIdle: () => boolean }).isIdle()
+    : true;
+  if (!idle) {
+    throw new Error("Foreground Codex reviews only run when the current PI session is idle.");
+  }
   const target = resolveReviewTarget(ctx.cwd, {
     scope: options.scope ?? settings.defaultReviewScope,
     base: options.base,
@@ -600,10 +606,6 @@ export async function executeForegroundReviewRun(
     thinkingLevel,
   );
   const toolPlan = buildBackgroundReviewToolPlan(pi);
-  const idle = typeof (ctx as { isIdle?: () => boolean }).isIdle === "function"
-    ? (ctx as { isIdle: () => boolean }).isIdle()
-    : true;
-  const deliverAs = idle ? undefined : "followUp";
   const availableToolNames = new Set(pi.getAllTools().map((tool) => tool.name));
   const activeToolNames = toolPlan.requestedToolNames.filter((toolName) => availableToolNames.has(toolName));
   const activeWebTools = toolPlan.activatedWebTools.filter((toolName) => availableToolNames.has(toolName));
@@ -617,7 +619,6 @@ export async function executeForegroundReviewRun(
     activeWebTools,
     timeoutMs: MAX_FOREGROUND_AGENTIC_REVIEW_DURATION_MS,
     maxToolCalls: inspectionToolCallBudgetForReview(kind, reviewContext.content),
-    deliverAs,
   });
   return executePreparedReviewRun(
     ctx,
