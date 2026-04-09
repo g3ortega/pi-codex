@@ -32,11 +32,13 @@ import {
 } from "../runtime/session-prompts.js";
 import { resolveSessionIdentity } from "../runtime/session-identity.js";
 import { getCurrentSessionThinkingLevel, resolveEffectiveThinkingLevel, type CodexThinkingLevel } from "../runtime/thinking.js";
+import { BACKGROUND_READONLY_ENV } from "../runtime/path-protection.js";
+import { dropQueuedNativeResearchPrompt, queueNativeResearchPrompt, supportsNativeWebSearch } from "../runtime/native-tools.js";
 
 const INTERNAL_RESEARCH_JOB_COMMAND = "codex:internal-run-research-job";
 const CURRENT_EXTENSION_PATH = fileURLToPath(new URL("../../extensions/core/index.ts", import.meta.url));
-const MAX_RESEARCH_JOB_DURATION_MS = 15 * 60 * 1_000;
-const MAX_RESEARCH_JOB_IDLE_MS = 3 * 60 * 1_000;
+const MAX_RESEARCH_JOB_DURATION_MS = 20 * 60 * 1_000;
+const MAX_RESEARCH_JOB_IDLE_MS = 5 * 60 * 1_000;
 
 type AgentMessageLike = {
   role?: string;
@@ -147,7 +149,7 @@ function spawnDetachedResearchWorker(job: ResearchBackgroundJob): number | null 
       cwd: job.repoRoot,
       detached: true,
       stdio: ["ignore", stdout, stderr],
-      env: { ...process.env },
+      env: { ...process.env, [BACKGROUND_READONLY_ENV]: "1" },
       windowsHide: true,
     });
     child.unref();
@@ -169,9 +171,10 @@ export async function launchBackgroundResearchJob(
   const sessionIdentity = resolveSessionIdentity(ctx);
   const repoRoot = safeRepoRoot(ctx.cwd);
   const branch = safeBranch(repoRoot);
-  const toolPlan = buildBackgroundResearchToolPlan(pi);
   const model = resolveModel(ctx, settings, explicitModel);
   await requireModelAuth(ctx, model);
+  const nativeWebSearchEnabled = supportsNativeWebSearch(model);
+  const toolPlan = buildBackgroundResearchToolPlan(pi, { nativeWebSearchAvailable: nativeWebSearchEnabled });
   const id = generateJobId("research");
   const createdAt = nowIso();
   const sessionDir = getJobSessionDir(repoRoot, id);
@@ -187,10 +190,12 @@ export async function launchBackgroundResearchJob(
     request: request.trim(),
     modelSpec: modelSpec(model.provider, model.id),
     thinkingLevel,
+    nativeWebSearchEnabled,
     requestedToolNames: toolPlan.requestedToolNames,
     safeBuiltinTools: toolPlan.safeBuiltinTools,
-    activeWebTools: toolPlan.interactiveSnapshot.activeWebTools,
-    inactiveAvailableWebTools: toolPlan.interactiveSnapshot.inactiveAvailableWebTools,
+    activeWebTools: toolPlan.activatedWebTools,
+    inactiveAvailableWebTools: toolPlan.interactiveSnapshot.inactiveAvailableWebTools
+      .filter((toolName) => !toolPlan.activatedWebTools.includes(toolName)),
     extensionPaths: toolPlan.extensionPaths,
   };
 
@@ -211,6 +216,7 @@ export async function launchBackgroundResearchJob(
     modelId: model.id,
     modelSpec: snapshot.modelSpec,
     thinkingLevel,
+    nativeWebSearchEnabled,
     requestedToolNames: snapshot.requestedToolNames,
     activeToolNames: [],
     safeBuiltinTools: snapshot.safeBuiltinTools,
@@ -374,8 +380,14 @@ export async function runDetachedResearchJob(
       appendJobLog(job.workspaceRoot, job.id, `Missing requested tools: ${missingToolNames.join(", ")}.`);
     }
 
-    const effectiveSnapshot = inspectResearchToolsFromNames(pi, activeToolNames);
+    const effectiveSnapshot = inspectResearchToolsFromNames(pi, activeToolNames, {
+      nativeWebSearchAvailable: snapshot.nativeWebSearchEnabled,
+    });
+    effectiveSnapshot.nativeWebSearchAvailable = snapshot.nativeWebSearchEnabled;
     const prompt = buildResearchPrompt(snapshot.request, effectiveSnapshot);
+    if (snapshot.nativeWebSearchEnabled) {
+      queueNativeResearchPrompt(prompt);
+    }
     let awaitingAgentEnd = false;
     const completion = new Promise<string>((resolve, reject) => {
       let settled = false;
@@ -458,7 +470,14 @@ export async function runDetachedResearchJob(
     //
     // Ordering matters: arm the handler before dispatching the new user message.
     awaitingAgentEnd = true;
-    pi.sendUserMessage(prompt);
+    try {
+      pi.sendUserMessage(prompt);
+    } catch (error) {
+      if (snapshot.nativeWebSearchEnabled) {
+        dropQueuedNativeResearchPrompt(prompt);
+      }
+      throw error;
+    }
     const finalText = await completion;
 
     const current = readBackgroundJob(ctx.cwd, job.id);

@@ -27,6 +27,11 @@ export interface ReviewSnapshot {
   focusText?: string;
   modelSpec: string;
   thinkingLevel?: CodexThinkingLevel;
+  requestedToolNames?: string[];
+  safeBuiltinTools?: string[];
+  activeWebTools?: string[];
+  inactiveAvailableWebTools?: string[];
+  extensionPaths?: string[];
   reviewInput: string;
 }
 
@@ -41,6 +46,7 @@ export interface ResearchSnapshot {
   request: string;
   modelSpec: string;
   thinkingLevel?: CodexThinkingLevel;
+  nativeWebSearchEnabled?: boolean;
   requestedToolNames: string[];
   safeBuiltinTools: string[];
   activeWebTools: string[];
@@ -124,6 +130,14 @@ export interface ReviewBackgroundJob extends BaseBackgroundJob {
   focusText?: string;
   thinkingLevel?: CodexThinkingLevel;
   resultVerdict?: ReviewVerdict;
+  requestedToolNames?: string[];
+  activeToolNames?: string[];
+  safeBuiltinTools?: string[];
+  activeWebTools?: string[];
+  inactiveAvailableWebTools?: string[];
+  extensionPaths?: string[];
+  missingToolNames?: string[];
+  sessionDir?: string;
 }
 
 export interface ResearchBackgroundJob extends BaseBackgroundJob {
@@ -132,6 +146,7 @@ export interface ResearchBackgroundJob extends BaseBackgroundJob {
   request: string;
   requestSummary: string;
   thinkingLevel?: CodexThinkingLevel;
+  nativeWebSearchEnabled?: boolean;
   requestedToolNames: string[];
   activeToolNames: string[];
   safeBuiltinTools: string[];

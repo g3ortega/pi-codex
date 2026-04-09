@@ -326,7 +326,7 @@ test("background launches fail fast when the selected model has no available aut
       assert.equal(findBackgroundJob(workspaceRoot), null);
 
       await assert.rejects(
-        () => launchBackgroundReviewJob(ctx, DUMMY_SETTINGS, "review", { scope: "working-tree" }),
+        () => launchBackgroundReviewJob(pi, ctx, DUMMY_SETTINGS, "review", { scope: "working-tree" }),
         /No API key found for openai-codex/i,
       );
       assert.equal(findBackgroundJob(workspaceRoot), null);
@@ -477,6 +477,7 @@ test("detached runner entry paths short-circuit already-cancelled jobs before li
       );
 
       const reviewResult = await runDetachedReviewJob(
+        createPiStub(),
         { cwd: workspaceRoot },
         DUMMY_SETTINGS,
         "review-cancelling",
@@ -739,6 +740,7 @@ test("detached review runner fails with a terminal error when the model call exc
 
       await assert.rejects(
         runDetachedReviewJob(
+          createPiStub(),
           { cwd: workspaceRoot },
           DUMMY_SETTINGS,
           "review-timeout",

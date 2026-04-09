@@ -458,10 +458,10 @@ test("background notifier previews long research results instead of inlining the
       assert.match(fake.sent[0].message.content, /# Codex Research Complete/);
       assert.match(fake.sent[0].message.content, /Preview:/);
       assert.match(fake.sent[0].message.content, /First substantive finding for the preview\./);
-      assert.match(fake.sent[0].message.content, /Result was too long to inline fully/);
+      assert.match(fake.sent[0].message.content, /Result was too long to inline fully in the completion notification\./);
       assert.match(
         fake.sent[0].message.content,
-        /Use `\/codex:result --last` for the newest research result or `\/codex:result research-notify-long` for this exact stored result\./,
+        /Use `\/codex:result --last` for the latest research result or `\/codex:result research-notify-long` for this exact result\./,
       );
       assert.doesNotMatch(fake.sent[0].message.content, /^# Codex Research\n\n- Job ID: research-notify-long\n\nFinal answer:/m);
 

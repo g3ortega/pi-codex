@@ -4,7 +4,13 @@ import { Box, Markdown, Text } from "@mariozechner/pi-tui";
 import { DynamicBorder, getMarkdownTheme } from "@mariozechner/pi-coding-agent";
 
 import { loadCodexSettings, registerCodexSettings } from "../../src/config/codex-settings.js";
-import { launchBackgroundReviewJob, runDetachedReviewJob, internalReviewJobCommandName } from "../../src/background/review-job.js";
+import {
+  executeForegroundReviewRun,
+  isForegroundReviewReadOnlyActive,
+  launchBackgroundReviewJob,
+  runDetachedReviewJob,
+  internalReviewJobCommandName,
+} from "../../src/background/review-job.js";
 import {
   internalResearchJobCommandName,
   launchBackgroundResearchJob,
@@ -34,11 +40,27 @@ import {
 } from "../../src/runtime/job-render.js";
 import { REPORT_TYPE, sendReport, type ReportDetails } from "../../src/runtime/report-message.js";
 import { parseTaskCommandOptions } from "../../src/runtime/task-command-options.js";
-import { findProtectedPathInBashCommand, findProtectedPathMatch } from "../../src/runtime/path-protection.js";
+import {
+  BACKGROUND_READONLY_ENV,
+  ensureHeadlessReadOnlyBashWhitelisted,
+  findProtectedPathInBashCommand,
+  findProtectedPathMatch,
+  isLikelyReadOnlyShellCommand,
+} from "../../src/runtime/path-protection.js";
 import { buildInspectionRetryGuidance, buildResearchPrompt, buildTaskPrompt, inspectResearchTools } from "../../src/runtime/session-prompts.js";
-import { executeReviewRun, type ReviewCommandOptions } from "../../src/review/review-runner.js";
+import { type ReviewCommandOptions } from "../../src/review/review-runner.js";
 import { findStoredReview, listStoredReviews, storedReviewSortKey } from "../../src/runtime/review-store.js";
 import { CODEX_THINKING_LEVELS, getCurrentSessionThinkingLevel, parseCodexThinkingLevel, type CodexThinkingLevel } from "../../src/runtime/thinking.js";
+import {
+  activateQueuedNativeResearchPromptsFromPayload,
+  activateQueuedNativeResearchPrompt,
+  appendNativeWebSearchTool,
+  clearActiveNativeResearchPrompt,
+  dropQueuedNativeResearchPrompt,
+  queueNativeResearchPrompt,
+  shouldAppendNativeWebSearchTool,
+  supportsNativeWebSearch,
+} from "../../src/runtime/native-tools.js";
 import { reviewKindTitle, type CodexReviewKind } from "../../src/review/review-kind.js";
 import {
   renderConfigMarkdown,
@@ -339,11 +361,11 @@ async function handleReviewCommand(
   }
   if (kind === "review" && options.focusText) {
     throw new Error(
-      `\`/codex:review\` stays non-steerable. Retry with \`/codex:adversarial-review ${options.focusText}\` for focused review instructions.`,
+      `\`/codex:review\` is intentionally unsteered. If you want to point Codex at a specific concern, use \`/codex:adversarial-review ${options.focusText}\`.`,
     );
   }
   if (options.background) {
-    const job = await launchBackgroundReviewJob(ctx, settings, kind, options);
+    const job = await launchBackgroundReviewJob(pi, ctx, settings, kind, options);
     sendReport(
       pi,
       `${reviewKindTitle(kind)} Job`,
@@ -352,7 +374,7 @@ async function handleReviewCommand(
     );
     return;
   }
-  const run = await executeReviewRun(ctx, settings, kind, options);
+  const run = await executeForegroundReviewRun(pi, ctx, settings, kind, options);
   sendReport(
     pi,
     reviewKindTitle(kind),
@@ -370,14 +392,14 @@ async function handleTaskCommand(
 ): Promise<boolean> {
   const settings = loadCodexSettings(ctx.cwd);
   if (!settings.enableTaskCommand) {
-    sendReport(pi, "Codex Task", "# Codex Task\n\nThe task command is disabled in the current Codex settings.\n", "warning");
+    sendReport(pi, "Codex Task", "# Codex Task\n\nThis workspace has the task command turned off in its current Codex settings.\n", "warning");
     return false;
   }
 
   const options = parseTaskCommandOptions(rawArgs);
   const request = options.request;
   if (!request) {
-    sendReport(pi, "Codex Task", "# Codex Task\n\nProvide a request, for example `/codex:task investigate why auth refresh fails`.\n", "warning");
+    sendReport(pi, "Codex Task", "# Codex Task\n\nAdd a task after the command, for example `/codex:task investigate why auth refresh fails`.\n", "warning");
     return false;
   }
 
@@ -433,7 +455,7 @@ async function handleResearchCommand(
 ): Promise<boolean> {
   const settings = loadCodexSettings(ctx.cwd);
   if (!settings.enableResearchCommand) {
-    sendReport(pi, "Codex Research", "# Codex Research\n\nThe research command is disabled in the current Codex settings.\n", "warning");
+    sendReport(pi, "Codex Research", "# Codex Research\n\nThis workspace has the research command turned off in its current Codex settings.\n", "warning");
     return false;
   }
 
@@ -443,7 +465,7 @@ async function handleResearchCommand(
     sendReport(
       pi,
       "Codex Research",
-      "# Codex Research\n\nProvide a request, for example `/codex:research compare PI extension APIs with Codex CLI and verify current web tooling support`.\n",
+      "# Codex Research\n\nAdd a research question after the command, for example `/codex:research compare PI extension APIs with Codex CLI and verify current web tooling support`.\n",
       "warning",
     );
     return false;
@@ -455,13 +477,22 @@ async function handleResearchCommand(
     return false;
   }
 
-  const snapshot = inspectResearchTools(pi);
+  const nativeWebSearchAvailable = supportsNativeWebSearch(ctx.model);
+  const snapshot = inspectResearchTools(pi, { nativeWebSearchAvailable });
+  snapshot.nativeWebSearchAvailable = nativeWebSearchAvailable;
   const deliverAs = ctx.isIdle() ? undefined : "followUp";
   const previousThinkingLevel = getCurrentSessionThinkingLevel(pi, ctx) ?? pi.getThinkingLevel();
   const inlineThinking = prepareInlineThinkingOverride(pi, ctx, options.thinkingLevel, pendingThinkingRestore, agentLifecycle, "research");
+  const prompt = buildResearchPrompt(request, snapshot);
   try {
-    pi.sendUserMessage(buildResearchPrompt(request, snapshot), deliverAs ? { deliverAs } : undefined);
+    if (snapshot.nativeWebSearchAvailable) {
+      queueNativeResearchPrompt(prompt);
+    }
+    pi.sendUserMessage(prompt, deliverAs ? { deliverAs } : undefined);
   } catch (error) {
+    if (snapshot.nativeWebSearchAvailable) {
+      dropQueuedNativeResearchPrompt(prompt);
+    }
     if (inlineThinking.restoreQueued) {
       restorePendingThinkingLevel(pi, pendingThinkingRestore, previousThinkingLevel);
     }
@@ -613,7 +644,7 @@ async function handleStatusCommand(pi: ExtensionAPI, ctx: ExtensionCommandContex
       return;
     }
     if (!run) {
-      sendReport(pi, "Codex Status", `# Codex Status\n\nNo background job or stored review matches \`${reference}\` for this workspace.\n`, "warning");
+      sendReport(pi, "Codex Status", `# Codex Status\n\nNo background job or saved review matches \`${reference}\` in this workspace.\n`, "warning");
       return;
     }
     sendReport(pi, "Codex Result", renderStoredReviewMarkdown(run), "info");
@@ -634,7 +665,7 @@ async function handleResultCommand(pi: ExtensionAPI, ctx: ExtensionCommandContex
   if (isExplicitLatestResultRequest(rawArgs)) {
     const latest = resolveLatestStoredResult(ctx.cwd);
     if (!latest) {
-      sendReport(pi, "Codex Result", "# Codex Result\n\nNo stored background job result or foreground review result is available for this workspace.\n", "warning");
+      sendReport(pi, "Codex Result", "# Codex Result\n\nThere is no saved result in this workspace yet.\n", "warning");
       return;
     }
 
@@ -687,7 +718,7 @@ async function handleResultCommand(pi: ExtensionAPI, ctx: ExtensionCommandContex
     return;
   }
   if (!run) {
-    sendReport(pi, "Codex Result", "# Codex Result\n\nNo stored background job result or foreground review result is available for this workspace.\n", "warning");
+    sendReport(pi, "Codex Result", "# Codex Result\n\nThere is no saved result matching that request in this workspace.\n", "warning");
     return;
   }
   sendReport(pi, "Codex Result", renderStoredReviewMarkdown(run), "info");
@@ -703,7 +734,7 @@ async function handleCancelCommand(pi: ExtensionAPI, ctx: ExtensionCommandContex
     return;
   }
   if (!cancelled) {
-    sendReport(pi, "Codex Cancel", "# Codex Cancel\n\nNo active background Codex job is available to cancel in this workspace.\n", "warning");
+    sendReport(pi, "Codex Cancel", "# Codex Cancel\n\nThere is no active background Codex job to cancel in this workspace.\n", "warning");
     return;
   }
 
@@ -718,7 +749,7 @@ async function handleJobsCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext)
 async function handleApplyCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext, rawArgs: string): Promise<void> {
   const reference = rawArgs.trim();
   if (!reference) {
-    sendReport(pi, "Codex Apply", "# Codex Apply\n\nProvide a background write-task job id, for example `/codex:apply task-m123abc`.\n", "warning");
+    sendReport(pi, "Codex Apply", "# Codex Apply\n\nProvide a completed background write-task id, for example `/codex:apply task-m123abc`.\n", "warning");
     return;
   }
 
@@ -736,7 +767,7 @@ async function handleApplyCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext
     return;
   }
   if (job.jobClass !== "task" || job.profile !== "write") {
-    sendReport(pi, "Codex Apply", "# Codex Apply\n\nOnly completed background `task-write` jobs can be applied back to the live repository.\n", "warning");
+    sendReport(pi, "Codex Apply", "# Codex Apply\n\nOnly completed background write tasks can be applied back to the live repository.\n", "warning");
     return;
   }
 
@@ -745,7 +776,7 @@ async function handleApplyCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext
     const lines = [
       "# Codex Apply",
       "",
-      "Applied the stored background write-task patch to the live repository.",
+      "Applied the saved background write-task patch to the live repository.",
       "",
       `- Job ID: ${job.id}`,
       `- Repository: ${applied.repoRoot}`,
@@ -783,8 +814,8 @@ function thinkingFlagCompletionSpec(description: string): FlagCompletionSpec {
       value,
       description:
         value === "off"
-          ? "Disable extended reasoning for this run."
-          : `Use ${value} effort for this run.`,
+          ? "Use the model without extra reasoning."
+          : `Use ${value} reasoning effort for this run.`,
     })),
   };
 }
@@ -865,19 +896,19 @@ function reviewArgumentCompletions(argumentPrefix: string): AutocompleteItem[] |
   return buildFlagArgumentCompletions(argumentPrefix, [
     {
       flag: "--background",
-      description: "Run the review as a detached background job.",
+      description: "Run this review in the background and notify you when it finishes.",
     },
     {
       flag: "--scope",
-      description: "Choose which repository state to review.",
+      description: "Choose what Codex should review.",
       values: [
-        { value: "working-tree", description: "Review staged, unstaged, and untracked changes in the current worktree." },
-        { value: "branch", description: "Review the branch diff against the selected base ref." },
+        { value: "working-tree", description: "Review staged, unstaged, and untracked changes in your current checkout." },
+        { value: "branch", description: "Review the full branch diff against a base ref." },
       ],
     },
     {
       flag: "--base",
-      description: "Set the base ref used for branch reviews.",
+      description: "Choose the base ref for `--scope branch`.",
       values: [
         { value: "origin/main", description: "Compare the current branch against origin/main." },
         { value: "main", description: "Compare the current branch against local main." },
@@ -887,10 +918,10 @@ function reviewArgumentCompletions(argumentPrefix: string): AutocompleteItem[] |
     },
     {
       flag: "--model",
-      description: "Override the provider/model used for this review run.",
-      values: [{ value: "openai-codex/gpt-5.3-codex", description: "Use the current Codex default model." }],
+      description: "Use a different model for this review.",
+      values: [{ value: "openai-codex/gpt-5.3-codex", description: "Use a Codex model for this run." }],
     },
-    thinkingFlagCompletionSpec("Override the reasoning effort used for this review run."),
+    thinkingFlagCompletionSpec("Set the reasoning effort for this review."),
   ]);
 }
 
@@ -898,22 +929,22 @@ function taskArgumentCompletions(argumentPrefix: string): AutocompleteItem[] | n
   return buildFlagArgumentCompletions(argumentPrefix, [
     {
       flag: "--readonly",
-      description: "Keep the task read-only and ask for diagnosis or a proposed patch.",
+      description: "Inspect and explain only. Do not edit files.",
     },
     {
       flag: "--write",
-      description: "Allow code changes for this task.",
+      description: "Allow Codex to make code changes for this task.",
     },
     {
       flag: "--background",
-      description: "Run the task in a detached worker instead of the current session.",
+      description: "Run this task in the background and notify you when it finishes.",
     },
     {
       flag: "--model",
-      description: "Override the provider/model used for this task run.",
-      values: [{ value: "openai-codex/gpt-5.3-codex", description: "Use the current Codex default model." }],
+      description: "Use a different model for this task.",
+      values: [{ value: "openai-codex/gpt-5.3-codex", description: "Use a Codex model for this run." }],
     },
-    thinkingFlagCompletionSpec("Override the reasoning effort used for this task run."),
+    thinkingFlagCompletionSpec("Set the reasoning effort for this task."),
   ]);
 }
 
@@ -921,14 +952,14 @@ function researchArgumentCompletions(argumentPrefix: string): AutocompleteItem[]
   return buildFlagArgumentCompletions(argumentPrefix, [
     {
       flag: "--background",
-      description: "Run the research in a detached worker with completion notification.",
+      description: "Run this research in the background and notify you when it finishes.",
     },
     {
       flag: "--model",
-      description: "Override the provider/model used for this research run.",
-      values: [{ value: "openai-codex/gpt-5.3-codex", description: "Use the current Codex default model." }],
+      description: "Use a different model for this research run.",
+      values: [{ value: "openai-codex/gpt-5.3-codex", description: "Use a Codex model for this run." }],
     },
-    thinkingFlagCompletionSpec("Override the reasoning effort used for this research run."),
+    thinkingFlagCompletionSpec("Set the reasoning effort for this research run."),
   ]);
 }
 
@@ -936,7 +967,7 @@ function resultArgumentCompletions(argumentPrefix: string): AutocompleteItem[] |
   return buildFlagArgumentCompletions(argumentPrefix, [
     {
       flag: "--last",
-      description: "Show the latest stored result without providing a job id.",
+      description: "Open the latest saved result for this workspace.",
     },
   ]);
 }
@@ -1091,6 +1122,18 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
     ctx.ui.setStatus("pi-codex", theme.fg("dim", "Codex review ready"));
   });
 
+  pi.on("before_agent_start", async (event) => {
+    activateQueuedNativeResearchPrompt(event.prompt);
+  });
+
+  pi.on("before_provider_request", async (event) => {
+    if (!shouldAppendNativeWebSearchTool(event.payload)) {
+      return undefined;
+    }
+    activateQueuedNativeResearchPromptsFromPayload(event.payload);
+    return appendNativeWebSearchTool(event.payload);
+  });
+
   pi.on("agent_start", async () => {
     agentLifecycle.running = true;
   });
@@ -1116,11 +1159,13 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
 
   pi.on("agent_end", async () => {
     agentLifecycle.running = false;
+    clearActiveNativeResearchPrompt();
     restorePendingThinkingLevel(pi, pendingThinkingRestore);
   });
 
   pi.on("session_shutdown", async () => {
     agentLifecycle.running = false;
+    clearActiveNativeResearchPrompt();
     restorePendingThinkingLevel(pi, pendingThinkingRestore);
   });
 
@@ -1128,14 +1173,31 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
     const settings = loadCodexSettings(ctx.cwd);
     let blockedTarget: string | null = null;
     let builtinAlternativeReason: string | null = null;
+    const readOnlyWorkerMode = process.env[BACKGROUND_READONLY_ENV] === "1" || isForegroundReviewReadOnlyActive();
 
     if (event.toolName === "edit" || event.toolName === "write") {
+      if (readOnlyWorkerMode) {
+        return { block: true, reason: "Codex readonly workers are read-only. Do not edit or write files in this worker." };
+      }
       const pathValue = String((event.input as { path?: unknown }).path ?? "");
       blockedTarget = findProtectedPathMatch(pathValue, settings.protectedPaths);
     }
 
     if (event.toolName === "bash") {
       const command = String((event.input as { command?: unknown }).command ?? "");
+      const readOnlyBashAllowed = readOnlyWorkerMode && isLikelyReadOnlyShellCommand(command);
+      if (readOnlyWorkerMode && !readOnlyBashAllowed) {
+        return {
+          block: true,
+          reason: "Codex readonly workers are read-only. Use bash only for non-mutating inspection such as git diff/show/log/status or other read-only commands.",
+        };
+      }
+      if (readOnlyBashAllowed && !ctx.hasUI && !ensureHeadlessReadOnlyBashWhitelisted(ctx.cwd, command)) {
+        return {
+          block: true,
+          reason: "Codex could not pre-authorize this safe readonly bash command for headless execution. Use built-in read/find/grep/ls inspection instead.",
+        };
+      }
       const builtinAlternative = detectBuiltinAlternativeForBash(command, pi.getActiveTools());
       if (builtinAlternative) {
         builtinAlternativeReason = builtinAlternative.reason;
@@ -1174,6 +1236,22 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
       .trim();
 
     if (!textBody.includes("protected by pi-codex")) {
+      if (textBody.includes("Codex readonly workers are read-only.")) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: [
+                textBody,
+                "",
+                "Stay read-only in this background worker.",
+                "Use repository inspection tools or non-mutating git/bash commands instead of retrying a write or mutation.",
+              ].join("\n"),
+            },
+          ],
+        };
+      }
+
       if (!textBody.includes("built-in `") && !textBody.includes("Use the built-in")) {
         return undefined;
       }
@@ -1211,7 +1289,7 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
   registerSingleCommand(
     pi,
     "codex:review",
-    "Run a structured Codex review [--background] [--scope working-tree|branch] [--base <ref>] [--model <provider/model>] [--thinking <level>]",
+    "Review the current repo changes [--background] [--scope working-tree|branch] [--base <ref>] [--model <provider/model>] [--thinking <level>]",
     async (args, ctx) => {
       await handleReviewCommand(pi, ctx, "review", args);
     },
@@ -1220,7 +1298,7 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
   registerSingleCommand(
     pi,
     "codex:adversarial-review",
-    "Run an adversarial Codex review [--background] [--scope working-tree|branch] [--base <ref>] [--model <provider/model>] [--thinking <level>]",
+    "Run a stricter, risk-focused review [--background] [--scope working-tree|branch] [--base <ref>] [--model <provider/model>] [--thinking <level>]",
     async (args, ctx) => {
       await handleReviewCommand(pi, ctx, "adversarial-review", args);
     },
@@ -1229,7 +1307,7 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
   registerSingleCommand(
     pi,
     "codex:adversarial_mental_models_review",
-    "Run an adversarial mental-models Codex review [--background] [--scope working-tree|branch] [--base <ref>] [--model <provider/model>] [--thinking <level>]",
+    "Run the deepest multi-lens review [--background] [--scope working-tree|branch] [--base <ref>] [--model <provider/model>] [--thinking <level>]",
     async (args, ctx) => {
       await handleReviewCommand(pi, ctx, "adversarial-mental-models-review", args);
     },
@@ -1238,7 +1316,7 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
   registerSingleCommand(
     pi,
     "codex:task",
-    "Run a Codex-style task [--readonly|--write] [--background] [--model <provider/model>] [--thinking <level>]",
+    "Ask Codex to inspect or implement work [--readonly|--write] [--background] [--model <provider/model>] [--thinking <level>]",
     async (args, ctx) => {
       await runTaskCommandWithWaiter(pi, ctx, args, pendingInjectedTurnWaiters, pendingThinkingRestore, agentLifecycle);
     },
@@ -1247,7 +1325,7 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
   registerSingleCommand(
     pi,
     "codex:research",
-    "Run Codex-style research [--background] [--model <provider/model>] [--thinking <level>]",
+    "Ask Codex to research a question [--background] [--model <provider/model>] [--thinking <level>]",
     async (args, ctx) => {
       await runResearchCommandWithWaiter(pi, ctx, args, pendingInjectedTurnWaiters, pendingThinkingRestore, agentLifecycle);
     },
@@ -1260,7 +1338,7 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
       if (!jobId) {
         throw new Error("Background review runner requires a job id.");
       }
-      await runDetachedReviewJob(ctx, loadCodexSettings(ctx.cwd), jobId);
+      await runDetachedReviewJob(pi, ctx, loadCodexSettings(ctx.cwd), jobId);
     },
   });
   pi.registerCommand(internalResearchJobCommandName(), {
@@ -1283,29 +1361,29 @@ export default function registerCodexExtension(pi: ExtensionAPI): void {
       await runDetachedTaskJob(pi, ctx, loadCodexSettings(ctx.cwd), jobId);
     },
   });
-  registerCommandPair(pi, "codex:status", "codex-status", "Show background job status or stored review history for the current workspace", async (args, ctx) => {
+  registerCommandPair(pi, "codex:status", "codex-status", "Show job progress or recent review history for this workspace", async (args, ctx) => {
     await handleStatusCommand(pi, ctx, args);
   });
   registerCommandPair(
     pi,
     "codex:result",
     "codex-result",
-    "Show a stored background job result or review result [--last|<job-id>] for the current workspace",
+    "Open a saved result [--last|<job-id>] for this workspace",
     async (args, ctx) => {
       await handleResultCommand(pi, ctx, args);
     },
     resultArgumentCompletions,
   );
-  registerCommandPair(pi, "codex:cancel", "codex-cancel", "Cancel an active background Codex job for the current workspace", async (args, ctx) => {
+  registerCommandPair(pi, "codex:cancel", "codex-cancel", "Cancel an active background Codex job in this workspace", async (args, ctx) => {
     await handleCancelCommand(pi, ctx, args);
   });
-  registerCommandPair(pi, "codex:jobs", "codex-jobs", "List background Codex jobs for the current workspace", async (_args, ctx) => {
+  registerCommandPair(pi, "codex:jobs", "codex-jobs", "List recent background Codex jobs in this workspace", async (_args, ctx) => {
     await handleJobsCommand(pi, ctx);
   });
-  registerCommandPair(pi, "codex:apply", "codex-apply", "Apply a stored background task-write patch to the live repository", async (args, ctx) => {
+  registerCommandPair(pi, "codex:apply", "codex-apply", "Apply a saved background write-task patch to the live repository", async (args, ctx) => {
     await handleApplyCommand(pi, ctx, args);
   });
-  registerCommandPair(pi, "codex:config", "codex-config", "Show the merged Codex configuration for this PI session", async (_args, ctx) => {
+  registerCommandPair(pi, "codex:config", "codex-config", "Show the active pi-codex settings for this PI session", async (_args, ctx) => {
     await handleConfigCommand(pi, ctx);
   });
 }

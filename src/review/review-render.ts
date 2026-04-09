@@ -44,6 +44,12 @@ export function renderStoredReviewMarkdown(
       updatedAt?: string;
       status?: string;
     };
+    backgroundTooling?: {
+      safeBuiltinTools: string[];
+      activeWebTools: string[];
+      activeToolNames: string[];
+      missingToolNames?: string[];
+    };
   } = {},
 ): string {
   const duration = summarizeReviewDuration(run);
@@ -76,6 +82,16 @@ export function renderStoredReviewMarkdown(
 
   if (run.focusText) {
     header.push(`- Focus: ${run.focusText}`);
+  }
+  if (options.backgroundTooling) {
+    header.push(
+      `- Worker built-in tools: ${options.backgroundTooling.safeBuiltinTools.length > 0 ? options.backgroundTooling.safeBuiltinTools.join(", ") : "none"}`,
+      `- Active web tools: ${options.backgroundTooling.activeWebTools.length > 0 ? options.backgroundTooling.activeWebTools.join(", ") : "none"}`,
+      `- Activated tools: ${options.backgroundTooling.activeToolNames.length > 0 ? options.backgroundTooling.activeToolNames.join(", ") : "pending"}`,
+    );
+    if (options.backgroundTooling.missingToolNames && options.backgroundTooling.missingToolNames.length > 0) {
+      header.push(`- Missing requested tools: ${options.backgroundTooling.missingToolNames.join(", ")}`);
+    }
   }
 
   if (!run.result) {
@@ -153,6 +169,7 @@ export function renderReviewStatusMarkdown(runs: StoredReviewRun[]): string {
   }
 
   lines.push("", "Use `/codex:result <review-id>` to inspect a stored review.");
+  lines[lines.length - 1] = "Use `/codex:result <review-id>` to open one saved review.";
   return `${lines.join("\n").trimEnd()}\n`;
 }
 
@@ -165,22 +182,22 @@ export function renderTaskQueuedMarkdown(
     "# Codex Task",
     "",
     queued
-      ? "The Codex-style task has been queued as a follow-up in the current PI session."
-      : "The Codex-style task has been injected into the current PI session.",
+      ? "Queued this task as the next turn in your current PI session."
+      : "Sent this task to your current PI session.",
     ...(options.readOnly
       ? [
         "",
         "Mode:",
         "",
-        "Read-only. This task will inspect, diagnose, or propose a patch, but it should not edit files in the current session.",
+        "Read-only. Codex can inspect the code, explain what it found, or suggest a patch, but it should not edit files in this session.",
       ]
       : []),
     ...(options.ignoredModelSpec
       ? [
         "",
-        "Model override:",
+        "Model note:",
         "",
-        `\`${options.ignoredModelSpec}\` was treated as a host-side flag and not forwarded into the task text. Inline \`/codex:task\` still uses the current PI session model.`,
+        `Inline \`/codex:task\` still uses the current PI session model. \`${options.ignoredModelSpec}\` was recorded as a command flag and not sent as task text.`,
       ]
       : []),
     ...(options.appliedThinkingLevel
@@ -188,7 +205,7 @@ export function renderTaskQueuedMarkdown(
         "",
         "Thinking override:",
         "",
-        `This inline task will use the current PI session with a temporary thinking level of \`${options.appliedThinkingLevel}\` for the injected turn only.`,
+        `This inline task will temporarily use \`${options.appliedThinkingLevel}\` for this turn only.`,
       ]
       : []),
     "",
@@ -210,14 +227,15 @@ export function renderResearchQueuedMarkdown(
     "# Codex Research",
     "",
     queued
-      ? "The Codex-style research request has been queued as a follow-up in the current PI session."
-      : "The Codex-style research request has been injected into the current PI session.",
+      ? "Queued this research request as the next turn in your current PI session."
+      : "Sent this research request to your current PI session.",
     "",
     "Request:",
     "",
     request.trim(),
     "",
-    "Active research tools:",
+    "Research tools for this turn:",
+    `- Native Codex web search: ${snapshot.nativeWebSearchAvailable ? "enabled" : "disabled"}`,
     `- Web: ${snapshot.activeWebTools.length > 0 ? snapshot.activeWebTools.join(", ") : "none"}`,
     `- Local evidence: ${snapshot.activeLocalEvidenceTools.length > 0 ? snapshot.activeLocalEvidenceTools.join(", ") : "none"}`,
   ];
@@ -228,7 +246,7 @@ export function renderResearchQueuedMarkdown(
 
   if (snapshot.inactiveAvailableWebTools.length > 0) {
     lines.push(`- Installed but inactive web tools: ${snapshot.inactiveAvailableWebTools.join(", ")}`);
-    lines.push("", "Enable them with `/tools` if you want live web-grounded research in this session.");
+    lines.push("", "Enable them in `/tools` if you want PI-side web tools in this session too.");
   }
 
   return `${lines.join("\n").trimEnd()}\n`;
@@ -242,19 +260,19 @@ export function renderConfigMarkdown(
   const lines = [
     "# Codex Config",
     "",
-    `- Current session model: ${currentModelLabel ?? "none"}`,
-    `- Current session thinking: ${currentThinkingLevel ?? "n/a"}`,
+    `- Current PI model: ${currentModelLabel ?? "none"}`,
+    `- Current PI thinking: ${currentThinkingLevel ?? "n/a"}`,
     `- Default review scope: ${settings.defaultReviewScope}`,
-    `- Default review model: ${settings.defaultReviewModel ?? "(use current session model)"}`,
+    `- Default review model: ${settings.defaultReviewModel ?? "(use current PI model)"}`,
     `- Review history limit: ${settings.reviewHistoryLimit}`,
     `- Protect lockfiles: ${settings.protectLockfiles ? "on" : "off"}`,
-    `- Enable task command: ${settings.enableTaskCommand ? "on" : "off"}`,
-    `- Enable research command: ${settings.enableResearchCommand ? "on" : "off"}`,
+    `- Task command: ${settings.enableTaskCommand ? "on" : "off"}`,
+    `- Research command: ${settings.enableResearchCommand ? "on" : "off"}`,
     "",
     "Protected paths:",
     ...settings.protectedPaths.map((entry) => `- ${entry}`),
     "",
-    "Use `/extension-settings` to modify the global extension-backed values.",
+    "Use `/extension-settings` to change the global settings backed by PI.",
   ];
 
   return `${lines.join("\n").trimEnd()}\n`;

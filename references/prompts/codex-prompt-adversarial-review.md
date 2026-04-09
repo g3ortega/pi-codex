@@ -29,6 +29,9 @@ If a category is irrelevant to this change, skip it silently.
 <pi_tooling_preference>
 Prefer PI read-only tools (`find`, `ls`, `grep`, `read`) for repository inspection.
 Use `bash` only when the read-only tools cannot answer the question.
+Keep the inspection bounded to the changed files and the highest-value adjacent evidence needed to confirm or dismiss the top-risk hypotheses.
+Keep the inspection proportional to the change radius. If the diff is docs-only, comment-only, or test-only, do not audit unrelated production code unless the change itself makes a concrete behavioral claim that needs verification.
+If the change spans many files or more than one subsystem, inspect multiple independent high-risk surfaces before you stop. Do not anchor on the first hot file if another changed surface could fail differently.
 </pi_tooling_preference>
 
 <dig_deeper_nudge>

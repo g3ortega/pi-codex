@@ -46,11 +46,12 @@ import type {
   TaskSnapshot,
 } from "../runtime/job-types.js";
 import { getCurrentSessionThinkingLevel, resolveEffectiveThinkingLevel, type CodexThinkingLevel } from "../runtime/thinking.js";
+import { BACKGROUND_READONLY_ENV } from "../runtime/path-protection.js";
 
 const INTERNAL_TASK_JOB_COMMAND = "codex:internal-run-task-job";
 const CURRENT_EXTENSION_PATH = fileURLToPath(new URL("../../extensions/core/index.ts", import.meta.url));
-const MAX_TASK_JOB_DURATION_MS = 20 * 60 * 1_000;
-const MAX_TASK_JOB_IDLE_MS = 3 * 60 * 1_000;
+const MAX_TASK_JOB_DURATION_MS = 25 * 60 * 1_000;
+const MAX_TASK_JOB_IDLE_MS = 5 * 60 * 1_000;
 const WORKSPACE_ROOT_ENV = "PI_CODEX_WORKSPACE_ROOT";
 
 type AgentMessageLike = {
@@ -160,7 +161,11 @@ function spawnDetachedTaskWorker(job: TaskBackgroundJob): number | null {
       cwd: job.executionCwd,
       detached: true,
       stdio: ["ignore", stdout, stderr],
-      env: { ...process.env, [WORKSPACE_ROOT_ENV]: job.workspaceRoot },
+      env: {
+        ...process.env,
+        [WORKSPACE_ROOT_ENV]: job.workspaceRoot,
+        ...(job.profile === "readonly" ? { [BACKGROUND_READONLY_ENV]: "1" } : {}),
+      },
       windowsHide: true,
     });
     child.unref();
@@ -204,8 +209,9 @@ function buildTaskJob(
     thinkingLevel,
     requestedToolNames: toolPlan.requestedToolNames,
     safeBuiltinTools: toolPlan.safeBuiltinTools,
-    activeWebTools: toolPlan.interactiveSnapshot.activeWebTools,
-    inactiveAvailableWebTools: toolPlan.interactiveSnapshot.inactiveAvailableWebTools,
+    activeWebTools: toolPlan.activatedWebTools,
+    inactiveAvailableWebTools: toolPlan.interactiveSnapshot.inactiveAvailableWebTools
+      .filter((toolName) => !toolPlan.activatedWebTools.includes(toolName)),
     extensionPaths: toolPlan.extensionPaths,
   };
 

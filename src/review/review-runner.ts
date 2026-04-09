@@ -1,3 +1,6 @@
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { isAbsolute, join, relative, resolve } from "node:path";
+
 import { complete, type Message, type Model } from "@mariozechner/pi-ai";
 import { BorderedLoader } from "@mariozechner/pi-coding-agent";
 import type { ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
@@ -59,6 +62,19 @@ Check the happy path, failure path, retries, rollback or recovery behavior, stal
 If a category is irrelevant to this change, skip it silently.
 </coverage_expectations>
 
+<inspection_notes>
+Use the inspection notes as leads, not as truth.
+Re-verify the serious ones against the repository context before finalizing.
+{{INSPECTION_NOTES}}
+</inspection_notes>
+
+<adjacent_evidence>
+Use the adjacent evidence excerpts to verify, sharpen, or dismiss the candidate findings.
+If the excerpt weakens a finding, drop or downgrade it.
+If it reveals a nearby second issue in the same risky surface, include it if it is material.
+{{ADJACENT_EVIDENCE}}
+</adjacent_evidence>
+
 <finding_bar>
 Report only material findings.
 Do not include style feedback, naming feedback, low-value cleanup, or speculative concerns without evidence.
@@ -78,6 +94,11 @@ Check for missing guards, empty-state behavior, retries, stale state, rollback r
 Before finalizing, verify that you have inspected the highest-risk changed surfaces and that each reported issue is still material after considering nearby guards, call sites, and tests.
 If a concern weakens under closer inspection, drop it instead of padding the list.
 </verification_loop>
+
+<approval_bar>
+Do not return "approve" unless you explicitly ruled out at least two concrete failure hypotheses using nearby code, guards, tests, or other repository evidence.
+If you still have a materially important blind spot, keep it in uncertainties rather than glossing over it.
+</approval_bar>
 
 <structured_output_contract>
 Return only valid JSON matching this shape:
@@ -174,6 +195,19 @@ Check auth and trust boundaries, state transitions, retries, rollback or recover
 If a category is irrelevant to this change, skip it silently.
 </coverage_expectations>
 
+<inspection_notes>
+Use the inspection notes as leads, not as truth.
+Re-verify the serious ones against the repository context before finalizing.
+{{INSPECTION_NOTES}}
+</inspection_notes>
+
+<adjacent_evidence>
+Use the adjacent evidence excerpts to verify, sharpen, or dismiss the candidate findings.
+If the excerpt weakens a finding, drop or downgrade it.
+If it reveals a nearby second no-ship issue in the same risky surface, include it if it is material.
+{{ADJACENT_EVIDENCE}}
+</adjacent_evidence>
+
 <finding_bar>
 Report only material findings.
 Do not include style feedback, naming feedback, low-value cleanup, or speculative concerns without evidence.
@@ -193,6 +227,11 @@ Probe for second-order failures, retries, rollback gaps, hidden dependency assum
 Before finalizing, verify that you checked the highest-risk changed surfaces and that each issue would still matter in a realistic failure scenario.
 If a concern becomes weak under closer inspection, drop it instead of padding the list.
 </verification_loop>
+
+<approval_bar>
+Do not return "approve" unless you actively challenged at least two independent failure hypotheses in the highest-risk surfaces and could not support them after closer inspection.
+If a realistic no-ship concern remains unresolved, keep the verdict at "needs-attention" or surface the uncertainty explicitly.
+</approval_bar>
 
 <structured_output_contract>
 Return only valid JSON matching this shape:
@@ -247,7 +286,217 @@ Before finalizing, check that each finding is:
 </repository_context>
 `;
 
+const REVIEW_SYNTHESIS_PROMPT = `<role>
+You are Codex finalizing a software review.
+A first-pass draft review already exists. Your job is to verify it, deepen it, and return the final structured review.
+</role>
+
+<task>
+Re-review the provided repository context and the candidate review draft.
+Target: {{TARGET_LABEL}}
+User focus: {{USER_FOCUS}}
+</task>
+
+<review_goal>
+Treat the candidate review as provisional.
+Verify each candidate finding against the repository context.
+Remove weak or unsupported concerns.
+Look for additional material issues the draft may have missed in adjacent risky surfaces.
+</review_goal>
+
+<coverage_expectations>
+Review the materially changed files and the adjacent behavior they can break.
+Check the happy path, failure path, retries, rollback or recovery behavior, stale or partial state, concurrency or ordering assumptions, compatibility boundaries, and missing tests or observability where relevant.
+If a category is irrelevant to this change, skip it silently.
+</coverage_expectations>
+
+<inspection_notes>
+Use the inspection notes as leads, not as truth.
+Re-verify the serious ones against the repository context before finalizing.
+{{INSPECTION_NOTES}}
+</inspection_notes>
+
+<finalization_rules>
+Keep only material findings.
+Merge duplicates and keep the clearest wording.
+If the draft missed a material issue, add it.
+If the draft overstates an issue, downgrade or drop it.
+Keep ruled-out concerns only when a specific mechanism blocks the failure.
+Surface uncertainties only when they materially limit confidence.
+Do not stop just because the draft already has one strong finding.
+</finalization_rules>
+
+<approval_bar>
+Do not return "approve" unless the final pass can explicitly rule out at least two concrete failure hypotheses using nearby code, guards, tests, or other repository evidence.
+</approval_bar>
+
+<structured_output_contract>
+Return only valid JSON matching this shape:
+{
+  "verdict": "approve" | "needs-attention",
+  "summary": string,
+  "findings": [
+    {
+      "severity": "critical" | "high" | "medium" | "low",
+      "title": string,
+      "body": string,
+      "file": string,
+      "line_start": integer,
+      "line_end": integer,
+      "confidence": number,
+      "recommendation": string
+    }
+  ],
+  "ruled_out": string[],
+  "uncertainties": string[],
+  "next_steps": string[]
+}
+
+Use "needs-attention" if there is any material issue worth fixing before shipping.
+Use "approve" only if you cannot support any substantive finding from the provided context.
+Write the summary like a terse ship/no-ship assessment, not a neutral recap.
+</structured_output_contract>
+
+<grounding_rules>
+Every finding must be defensible from the provided repository context.
+If you infer behavior, say so explicitly in the finding body and keep confidence honest.
+Do not invent files, line numbers, or runtime failures.
+</grounding_rules>
+
+<candidate_review>
+{{CANDIDATE_REVIEW}}
+</candidate_review>
+
+<repository_context>
+{{REVIEW_INPUT}}
+</repository_context>
+`;
+
+const ADVERSARIAL_REVIEW_SYNTHESIS_PROMPT = `<role>
+You are Codex finalizing an adversarial software review.
+A first-pass adversarial draft already exists. Your job is to verify it, deepen it, and return the final blocking review.
+</role>
+
+<task>
+Re-review the provided repository context and the candidate adversarial review draft.
+Target: {{TARGET_LABEL}}
+User focus: {{USER_FOCUS}}
+</task>
+
+<operating_stance>
+Treat the candidate review as provisional.
+Actively look for missing no-ship risks, overstatements, and hidden dependency assumptions.
+Do not stop because the draft already found one strong issue.
+</operating_stance>
+
+<coverage_expectations>
+Review the materially changed files and the adjacent behavior they can break.
+Check auth and trust boundaries, state transitions, retries, rollback or recovery behavior, stale or partial state, ordering assumptions, compatibility boundaries, and missing tests or observability where relevant.
+If a category is irrelevant to this change, skip it silently.
+</coverage_expectations>
+
+<inspection_notes>
+Use the inspection notes as leads, not as truth.
+Re-verify the serious ones against the repository context before finalizing.
+{{INSPECTION_NOTES}}
+</inspection_notes>
+
+<finalization_rules>
+Keep only material adversarial findings.
+Merge duplicates and keep the clearest wording.
+If the draft missed an independent no-ship issue, add it.
+If the draft overstates a concern, downgrade or drop it.
+Keep ruled-out concerns only when a specific mechanism blocks the failure.
+Surface uncertainties only when they materially limit confidence.
+</finalization_rules>
+
+<approval_bar>
+Do not return "approve" unless the final pass tried and failed to support at least two independent failure hypotheses in the highest-risk surfaces.
+</approval_bar>
+
+<structured_output_contract>
+Return only valid JSON matching this shape:
+{
+  "verdict": "approve" | "needs-attention",
+  "summary": string,
+  "findings": [
+    {
+      "severity": "critical" | "high" | "medium" | "low",
+      "title": string,
+      "body": string,
+      "file": string,
+      "line_start": integer,
+      "line_end": integer,
+      "confidence": number,
+      "recommendation": string
+    }
+  ],
+  "ruled_out": string[],
+  "uncertainties": string[],
+  "next_steps": string[]
+}
+
+Use "needs-attention" if there is any material blocking risk.
+Use "approve" only if you cannot support any substantive adversarial finding from the provided context.
+Write the summary like a terse ship/no-ship assessment, not a neutral recap.
+</structured_output_contract>
+
+<grounding_rules>
+Be aggressive, but stay grounded.
+Every finding must be defensible from the provided repository context.
+Do not invent files, line numbers, incidents, attack chains, or runtime behavior you cannot support.
+</grounding_rules>
+
+<candidate_review>
+{{CANDIDATE_REVIEW}}
+</candidate_review>
+
+<repository_context>
+{{REVIEW_INPUT}}
+</repository_context>
+`;
+
 type MentalModelLens = "inverter" | "boundary-prober" | "invariant-auditor";
+
+const REVIEW_INSPECTION_PROMPT = `<role>
+You are Codex preparing a software review.
+Your job is to inspect the highest-risk changed surfaces and collect concrete leads before the final review.
+</role>
+
+<task>
+Inspect the provided repository context and identify the highest-risk places to verify.
+Target: {{TARGET_LABEL}}
+User focus: {{USER_FOCUS}}
+</task>
+
+<inspection_method>
+Look at the materially changed files first, then the nearby guards, callers, tests, config, and previous-version context most likely to change the verdict.
+Prefer concrete failure hypotheses over generic risk categories.
+If a likely issue depends on a nearby guard, test, callback, transaction boundary, retry path, or ordering assumption, note that dependency explicitly.
+Keep the inspection bounded: after the changed files, inspect only the highest-value adjacent evidence needed to confirm or dismiss the top hypotheses.
+Keep the inspection proportional to the change radius. If the diff is docs-only, comment-only, or test-only, do not audit unrelated production code unless the change itself makes a concrete behavioral claim that needs verification.
+If the change spans many files or more than one subsystem, inspect multiple independent high-risk surfaces before you stop. Do not anchor on the first hot file if another changed surface could fail differently.
+Prefer diff/show/status/log-style inspection and direct nearby reads over broad history walks or archaeology.
+Use blame or older history only when it is needed to confirm or dismiss a specific regression hypothesis.
+Stop once you have a compact set of substantiated candidate failures and the main risky hypotheses are either supported or explicitly weakened.
+</inspection_method>
+
+<output_contract>
+Return concise markdown only with these headings:
+## High-risk surfaces
+## Adjacent evidence to inspect
+## Candidate failure hypotheses
+## Safeguards already visible
+## Remaining gaps
+
+Keep it compact and concrete. Do not return the final review yet.
+Do not exhaustively inventory the repository or narrate every command you ran.
+</output_contract>
+
+<repository_context>
+{{REVIEW_INPUT}}
+</repository_context>
+`;
 
 type MentalModelLensResult = {
   lens: MentalModelLens;
@@ -283,6 +532,12 @@ For every plausible claim of correctness, try to negate it with a step-by-step f
 Assume duplicated work, lost work, wrong selection, corrupted state, and silent failure have already happened, then trace backwards through the code.
 If a path does not break, state the exact guard or mechanism that blocks it.
 </lens_method>
+
+<inspection_notes>
+Use the inspection notes as leads, not as truth.
+Re-verify the serious ones against the repository context before finalizing.
+{{INSPECTION_NOTES}}
+</inspection_notes>
 
 <structured_output_contract>
 Return only valid JSON matching this shape:
@@ -334,6 +589,12 @@ Reason at the boundary: nil, empty, zero, exact equality, duplicate matches, ord
 If a boundary looks safe, state the exact mechanism or test that makes it safe.
 </lens_method>
 
+<inspection_notes>
+Use the inspection notes as leads, not as truth.
+Re-verify the serious ones against the repository context before finalizing.
+{{INSPECTION_NOTES}}
+</inspection_notes>
+
 <structured_output_contract>
 Return only valid JSON matching this shape:
 {
@@ -383,6 +644,12 @@ Identify domain, data-integrity, ordering, and state-transition invariants.
 Check whether writes stay atomic enough, whether retries preserve invariants, and whether removed code dropped a protection that still needs to exist.
 If an invariant appears preserved, state the mechanism that preserves it.
 </lens_method>
+
+<inspection_notes>
+Use the inspection notes as leads, not as truth.
+Re-verify the serious ones against the repository context before finalizing.
+{{INSPECTION_NOTES}}
+</inspection_notes>
 
 <structured_output_contract>
 Return only valid JSON matching this shape:
@@ -437,6 +704,7 @@ Merge duplicates and keep the clearest wording.
 Keep ruled-out concerns only when a specific mechanism blocked the failure.
 Surface uncertainties when they materially limit confidence.
 Do not invent concerns that were not supported by the lens outputs.
+Use the adjacent evidence excerpts to corroborate, sharpen, or dismiss the candidate findings before finalizing.
 </aggregation_rules>
 
 <structured_output_contract>
@@ -472,6 +740,10 @@ Base the final answer on the supplied lens outputs.
 Do not invent files, line numbers, or runtime behavior beyond what the lens outputs support.
 </grounding_rules>
 
+<adjacent_evidence>
+{{ADJACENT_EVIDENCE}}
+</adjacent_evidence>
+
 <lens_outputs>
 {{LENS_OUTPUTS}}
 </lens_outputs>
@@ -479,22 +751,47 @@ Do not invent files, line numbers, or runtime behavior beyond what the lens outp
 
 function interpolatePrompt(
   template: string,
-  values: Record<"TARGET_LABEL" | "USER_FOCUS" | "REVIEW_INPUT", string>,
+  values: Record<"TARGET_LABEL" | "USER_FOCUS" | "REVIEW_INPUT" | "INSPECTION_NOTES", string>,
 ): string {
   return template
     .replaceAll("{{TARGET_LABEL}}", values.TARGET_LABEL)
     .replaceAll("{{USER_FOCUS}}", values.USER_FOCUS)
+    .replaceAll("{{INSPECTION_NOTES}}", values.INSPECTION_NOTES)
     .replaceAll("{{REVIEW_INPUT}}", values.REVIEW_INPUT);
 }
 
 function interpolateMentalModelsAggregationPrompt(
   template: string,
-  values: Record<"TARGET_LABEL" | "USER_FOCUS" | "LENS_OUTPUTS", string>,
+  values: Record<"TARGET_LABEL" | "USER_FOCUS" | "LENS_OUTPUTS" | "ADJACENT_EVIDENCE", string>,
 ): string {
   return template
     .replaceAll("{{TARGET_LABEL}}", values.TARGET_LABEL)
     .replaceAll("{{USER_FOCUS}}", values.USER_FOCUS)
+    .replaceAll("{{ADJACENT_EVIDENCE}}", values.ADJACENT_EVIDENCE)
     .replaceAll("{{LENS_OUTPUTS}}", values.LENS_OUTPUTS);
+}
+
+function interpolateReviewSynthesisPrompt(
+  template: string,
+  values: Record<"TARGET_LABEL" | "USER_FOCUS" | "CANDIDATE_REVIEW" | "REVIEW_INPUT" | "INSPECTION_NOTES" | "ADJACENT_EVIDENCE", string>,
+): string {
+  return template
+    .replaceAll("{{TARGET_LABEL}}", values.TARGET_LABEL)
+    .replaceAll("{{USER_FOCUS}}", values.USER_FOCUS)
+    .replaceAll("{{CANDIDATE_REVIEW}}", values.CANDIDATE_REVIEW)
+    .replaceAll("{{INSPECTION_NOTES}}", values.INSPECTION_NOTES)
+    .replaceAll("{{ADJACENT_EVIDENCE}}", values.ADJACENT_EVIDENCE)
+    .replaceAll("{{REVIEW_INPUT}}", values.REVIEW_INPUT);
+}
+
+function formatInspectionNotes(inspectionNotes: string | undefined): string {
+  const trimmed = inspectionNotes?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : "(none)";
+}
+
+function formatAdjacentEvidence(adjacentEvidence: string | undefined): string {
+  const trimmed = adjacentEvidence?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : "(none)";
 }
 
 function normalizeMentalModelLine(value: unknown): number | null {
@@ -615,6 +912,35 @@ async function performModelCompletion(
     .trim();
 }
 
+function trimInspectionSeedNotes(text: string, maxChars = 3_500): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= maxChars) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, maxChars).trimEnd()}\n\n(inspection seeds truncated)`;
+}
+
+export async function generateInspectionSeedNotesWithCompletion(
+  ctx: ExtensionCommandContext,
+  model: Model<any>,
+  targetLabel: string,
+  focusText: string | undefined,
+  reviewInput: string,
+  thinkingLevel: CodexThinkingLevel | undefined,
+  signal?: AbortSignal,
+): Promise<string> {
+  const auth = await requireModelAuth(ctx, model);
+  const notes = await performModelCompletion(
+    model,
+    auth,
+    "You are Codex. Inspect the repository context, gather concrete review leads, and return only the requested markdown sections.",
+    buildReviewInspectionPrompt(targetLabel, focusText, reviewInput),
+    thinkingLevel,
+    signal,
+  );
+  return trimInspectionSeedNotes(notes);
+}
+
 export function resolveModel(ctx: ExtensionCommandContext, settings: CodexSettings, explicitModel?: string): Model<any> {
   const modelSpec = explicitModel ?? settings.defaultReviewModel;
   if (!modelSpec) {
@@ -705,6 +1031,7 @@ export function buildStructuredReviewPrompt(
   targetLabel: string,
   focusText: string | undefined,
   reviewInput: string,
+  inspectionNotes?: string,
 ): string {
   if (kind !== "review" && kind !== "adversarial-review") {
     throw new Error(`Structured review prompt is not defined for review kind "${kind}".`);
@@ -713,6 +1040,190 @@ export function buildStructuredReviewPrompt(
   return interpolatePrompt(kind === "adversarial-review" ? ADVERSARIAL_REVIEW_PROMPT : REVIEW_PROMPT, {
     TARGET_LABEL: targetLabel,
     USER_FOCUS: focusText?.trim() || "(none)",
+    INSPECTION_NOTES: formatInspectionNotes(inspectionNotes),
+    REVIEW_INPUT: reviewInput,
+  });
+}
+
+export function renderCandidateReviewForSynthesis(
+  rawOutput: string,
+  parsed: ReturnType<typeof parseStructuredReviewOutput>["parsed"],
+  parseError: string | null,
+): string {
+  if (parsed) {
+    return JSON.stringify(parsed, null, 2);
+  }
+
+  if (parseError) {
+    return [
+      `Draft review parse error: ${parseError}`,
+      "",
+      "Raw draft review output:",
+      rawOutput.trim(),
+    ].join("\n");
+  }
+
+  return rawOutput.trim();
+}
+
+export function buildStructuredReviewSynthesisPrompt(
+  kind: Extract<CodexReviewKind, "review" | "adversarial-review">,
+  targetLabel: string,
+  focusText: string | undefined,
+  reviewInput: string,
+  candidateReview: string,
+  adjacentEvidence: string | undefined,
+  inspectionNotes?: string,
+): string {
+  return interpolateReviewSynthesisPrompt(
+    kind === "adversarial-review" ? ADVERSARIAL_REVIEW_SYNTHESIS_PROMPT : REVIEW_SYNTHESIS_PROMPT,
+    {
+      TARGET_LABEL: targetLabel,
+      USER_FOCUS: focusText?.trim() || "(none)",
+      CANDIDATE_REVIEW: candidateReview,
+      INSPECTION_NOTES: formatInspectionNotes(inspectionNotes),
+      ADJACENT_EVIDENCE: formatAdjacentEvidence(adjacentEvidence),
+      REVIEW_INPUT: reviewInput,
+    },
+  );
+}
+
+function renderAdjacentEvidenceExcerpt(
+  repoRoot: string,
+  filePath: string,
+  lineStart: number | null,
+  lineEnd: number | null,
+  radius = 20,
+): string | null {
+  const relativePath = filePath.trim();
+  if (!relativePath) {
+    return null;
+  }
+  const absolutePath = resolveSafeAdjacentEvidencePath(repoRoot, relativePath);
+  if (!absolutePath) {
+    return null;
+  }
+
+  let text: string;
+  try {
+    text = readFileSync(absolutePath, "utf8");
+  } catch {
+    return null;
+  }
+
+  const lines = text.split(/\r?\n/);
+  if (lines.length === 0) {
+    return null;
+  }
+
+  const safeStart = Math.max(1, lineStart ?? 1);
+  const safeEnd = Math.max(safeStart, lineEnd ?? safeStart);
+  const excerptStart = Math.max(1, safeStart - radius);
+  const excerptEnd = Math.min(lines.length, safeEnd + radius);
+  const excerpt = lines
+    .slice(excerptStart - 1, excerptEnd)
+    .map((line, index) => `${excerptStart + index}: ${line}`)
+    .join("\n")
+    .trimEnd();
+
+  if (!excerpt) {
+    return null;
+  }
+
+  return [`### ${relativePath}:${safeStart}${safeEnd > safeStart ? `-${safeEnd}` : ""}`, "```", excerpt, "```"].join("\n");
+}
+
+export function resolveSafeAdjacentEvidencePath(repoRoot: string, filePath: string): string | null {
+  const trimmedPath = filePath.trim();
+  if (!trimmedPath || trimmedPath.includes("\0")) {
+    return null;
+  }
+
+  const lexicalPath = resolve(repoRoot, trimmedPath);
+  if (!existsSync(lexicalPath)) {
+    return null;
+  }
+
+  let resolvedRoot: string;
+  let resolvedPath: string;
+  try {
+    resolvedRoot = realpathSync(repoRoot);
+    resolvedPath = realpathSync(lexicalPath);
+  } catch {
+    return null;
+  }
+
+  const relativePath = relative(resolvedRoot, resolvedPath);
+  if (relativePath === "") {
+    return resolvedPath;
+  }
+  if (relativePath.startsWith("..") || isAbsolute(relativePath)) {
+    return null;
+  }
+  return resolvedPath;
+}
+
+function buildAdjacentEvidence(
+  repoRoot: string,
+  parsed: ReturnType<typeof parseStructuredReviewOutput>["parsed"] | null,
+  maxExcerpts = 4,
+): string | undefined {
+  if (!parsed?.findings?.length) {
+    return undefined;
+  }
+
+  const excerpts: string[] = [];
+  const seen = new Set<string>();
+  for (const finding of parsed.findings) {
+    if (excerpts.length >= maxExcerpts) {
+      break;
+    }
+    const key = `${finding.file}:${finding.line_start}:${finding.line_end}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    const excerpt = renderAdjacentEvidenceExcerpt(repoRoot, finding.file, finding.line_start, finding.line_end);
+    if (excerpt) {
+      excerpts.push(excerpt);
+    }
+  }
+
+  return excerpts.length > 0 ? excerpts.join("\n\n") : undefined;
+}
+
+function buildAdjacentEvidenceFromMentalModelResults(
+  repoRoot: string,
+  lensResults: MentalModelLensResult[],
+): string | undefined {
+  const findings = lensResults.flatMap((result) => result.findings);
+  if (findings.length === 0) {
+    return undefined;
+  }
+
+  return buildAdjacentEvidence(
+    repoRoot,
+    {
+      verdict: "needs-attention",
+      summary: "mental-model evidence gathering",
+      findings,
+      ruled_out: [],
+      uncertainties: [],
+      next_steps: [],
+    },
+    5,
+  );
+}
+
+export function buildReviewInspectionPrompt(
+  targetLabel: string,
+  focusText: string | undefined,
+  reviewInput: string,
+): string {
+  return interpolatePrompt(REVIEW_INSPECTION_PROMPT, {
+    TARGET_LABEL: targetLabel,
+    USER_FOCUS: focusText?.trim() || "(none)",
+    INSPECTION_NOTES: "(none)",
     REVIEW_INPUT: reviewInput,
   });
 }
@@ -722,10 +1233,12 @@ function buildMentalModelLensPrompt(
   targetLabel: string,
   focusText: string | undefined,
   reviewInput: string,
+  inspectionNotes?: string,
 ): string {
   return interpolatePrompt(MENTAL_MODEL_LENS_PROMPTS[lens], {
     TARGET_LABEL: targetLabel,
     USER_FOCUS: focusText?.trim() || "(none)",
+    INSPECTION_NOTES: formatInspectionNotes(inspectionNotes),
     REVIEW_INPUT: reviewInput,
   });
 }
@@ -734,6 +1247,7 @@ function buildMentalModelsAggregationPrompt(
   targetLabel: string,
   focusText: string | undefined,
   lensOutputs: MentalModelLensResult[],
+  adjacentEvidence: string | undefined,
 ): string {
   const renderedLensOutputs = lensOutputs
     .map((output) => `## ${output.lens}\n${JSON.stringify(output, null, 2)}`)
@@ -742,6 +1256,7 @@ function buildMentalModelsAggregationPrompt(
   return interpolateMentalModelsAggregationPrompt(MENTAL_MODELS_AGGREGATION_PROMPT, {
     TARGET_LABEL: targetLabel,
     USER_FOCUS: focusText?.trim() || "(none)",
+    ADJACENT_EVIDENCE: formatAdjacentEvidence(adjacentEvidence),
     LENS_OUTPUTS: renderedLensOutputs,
   });
 }
@@ -749,10 +1264,12 @@ function buildMentalModelsAggregationPrompt(
 async function executeMentalModelsStructuredReview(
   ctx: ExtensionCommandContext,
   model: Model<any>,
+  repoRoot: string,
   targetLabel: string,
   focusText: string | undefined,
   reviewInput: string,
   thinkingLevel: CodexThinkingLevel | undefined,
+  inspectionNotes: string | undefined,
   signal?: AbortSignal,
 ): Promise<{ rawOutput: string; parsed: ReturnType<typeof parseStructuredReviewOutput>["parsed"]; parseError: string | null }> {
   const auth = await requireModelAuth(ctx, model);
@@ -762,7 +1279,7 @@ async function executeMentalModelsStructuredReview(
         model,
         auth,
         `You are Codex. Follow the ${lens} lens contract exactly and return only the requested JSON.`,
-        buildMentalModelLensPrompt(lens, targetLabel, focusText, reviewInput),
+        buildMentalModelLensPrompt(lens, targetLabel, focusText, reviewInput, inspectionNotes),
         thinkingLevel,
         signal,
       );
@@ -790,12 +1307,13 @@ async function executeMentalModelsStructuredReview(
   if (lensResults.every((result) => result.findings.length === 0 && result.uncertainties.length > 0)) {
     throw new Error("All mental-model review lenses failed before producing usable structured output.");
   }
+  const adjacentEvidence = buildAdjacentEvidenceFromMentalModelResults(repoRoot, lensResults);
 
   const aggregationRawOutput = await performModelCompletion(
     model,
     auth,
     "You are Codex. Aggregate the lens outputs into the final review contract and return only the requested JSON.",
-    buildMentalModelsAggregationPrompt(targetLabel, focusText, lensResults),
+    buildMentalModelsAggregationPrompt(targetLabel, focusText, lensResults, adjacentEvidence),
     thinkingLevel,
     signal,
   );
@@ -807,25 +1325,111 @@ async function executeMentalModelsStructuredReview(
   };
 }
 
+async function executeDeepStructuredReview(
+  ctx: ExtensionCommandContext,
+  model: Model<any>,
+  kind: Extract<CodexReviewKind, "review" | "adversarial-review">,
+  repoRoot: string,
+  targetLabel: string,
+  focusText: string | undefined,
+  reviewInput: string,
+  thinkingLevel: CodexThinkingLevel | undefined,
+  inspectionNotes: string | undefined,
+  signal?: AbortSignal,
+): Promise<{ rawOutput: string; parsed: ReturnType<typeof parseStructuredReviewOutput>["parsed"]; parseError: string | null }> {
+  const auth = await requireModelAuth(ctx, model);
+  const draftRawOutput = await performModelCompletion(
+    model,
+    auth,
+    "You are Codex. Follow the review contract exactly and return only the requested JSON.",
+    buildStructuredReviewPrompt(kind, targetLabel, focusText, reviewInput, inspectionNotes),
+    thinkingLevel,
+    signal,
+  );
+  const draftParsed = parseStructuredReviewOutput(draftRawOutput);
+  if (signal?.aborted) {
+    throw reviewAbortError(signal);
+  }
+  const adjacentEvidence = buildAdjacentEvidence(repoRoot, draftParsed.parsed);
+
+  const finalRawOutput = await performModelCompletion(
+    model,
+    auth,
+    "You are Codex. Verify, deepen, and finalize the review. Return only the requested JSON.",
+    buildStructuredReviewSynthesisPrompt(
+        kind,
+        targetLabel,
+        focusText,
+        reviewInput,
+        renderCandidateReviewForSynthesis(draftRawOutput, draftParsed.parsed, draftParsed.parseError),
+        adjacentEvidence,
+        inspectionNotes,
+      ),
+      thinkingLevel,
+      signal,
+  );
+  const finalParsed = parseStructuredReviewOutput(finalRawOutput);
+  if (finalParsed.parsed) {
+    return {
+      rawOutput: finalRawOutput,
+      parsed: finalParsed.parsed,
+      parseError: finalParsed.parseError,
+    };
+  }
+
+  if (draftParsed.parsed) {
+    return {
+      rawOutput: draftRawOutput,
+      parsed: {
+        ...draftParsed.parsed,
+        uncertainties: [
+          ...(draftParsed.parsed.uncertainties ?? []),
+          "Final synthesis pass returned invalid structured output, so the first-pass review was kept.",
+        ],
+      },
+      parseError: null,
+    };
+  }
+
+  return {
+    rawOutput: finalRawOutput,
+    parsed: finalParsed.parsed,
+    parseError: finalParsed.parseError,
+  };
+}
+
 export async function executePreparedReviewRun(
   ctx: ExtensionCommandContext,
   settings: CodexSettings,
   input: PreparedReviewExecutionInput,
-  options: { persist?: boolean; signal?: AbortSignal } = {},
+  options: { persist?: boolean; signal?: AbortSignal; inspectionNotes?: string } = {},
 ): Promise<StoredReviewRun> {
   const model = resolveModel(ctx, settings, input.modelSpec);
   const effectiveThinkingLevel = resolveEffectiveThinkingLevel(model, input.thinkingLevel);
   const startedAt = new Date().toISOString();
+  const inspectionNotes =
+    options.inspectionNotes ??
+    (await generateInspectionSeedNotesWithCompletion(
+      ctx,
+      model,
+      input.targetLabel,
+      input.focusText,
+      input.reviewInput,
+      effectiveThinkingLevel,
+      options.signal,
+    ));
   const parsed = input.kind === "adversarial-mental-models-review"
     ? await (async () => {
       if (!ctx.hasUI) {
         return executeMentalModelsStructuredReview(
           ctx,
           model,
+          input.repoRoot,
           input.targetLabel,
           input.focusText,
           input.reviewInput,
           effectiveThinkingLevel,
+          inspectionNotes,
           options.signal,
         );
       }
@@ -840,10 +1444,12 @@ export async function executePreparedReviewRun(
         executeMentalModelsStructuredReview(
           ctx,
           model,
+          input.repoRoot,
           input.targetLabel,
           input.focusText,
           input.reviewInput,
           effectiveThinkingLevel,
+          inspectionNotes,
           loader.signal,
         )
           .then((value) => done({ status: "ok", value }))
@@ -864,20 +1470,61 @@ export async function executePreparedReviewRun(
       }
       return result.value;
     })()
-    : await (() => {
-      const prompt = buildStructuredReviewPrompt(input.kind, input.targetLabel, input.focusText, input.reviewInput);
-      return runModelCompletion(
-        ctx,
-        input.kind === "adversarial-review" ? "Running Codex adversarial review..." : "Running Codex review...",
-        model,
-        "You are Codex. Follow the review contract exactly and return only the requested JSON.",
-        prompt,
-        effectiveThinkingLevel,
-        options.signal,
-      ).then((rawOutput) => {
-        const parsed = parseStructuredReviewOutput(rawOutput);
-        return { rawOutput, parsed: parsed.parsed, parseError: parsed.parseError };
+    : await (async () => {
+      const deepKind = input.kind as Extract<CodexReviewKind, "review" | "adversarial-review">;
+      if (!ctx.hasUI) {
+        return executeDeepStructuredReview(
+          ctx,
+          model,
+          deepKind,
+          input.repoRoot,
+          input.targetLabel,
+          input.focusText,
+          input.reviewInput,
+          effectiveThinkingLevel,
+          inspectionNotes,
+          options.signal,
+        );
+      }
+
+      const title = input.kind === "adversarial-review"
+        ? "Running Codex adversarial review..."
+        : "Running Codex review...";
+      const result = await ctx.ui.custom<
+        { status: "ok"; value: Awaited<ReturnType<typeof executeDeepStructuredReview>> } | { status: "cancelled" } | { status: "error"; message: string }
+      >((tui, theme, _keybindings, done) => {
+        const loader = new BorderedLoader(tui, theme, title);
+        loader.onAbort = () => done({ status: "cancelled" });
+
+        executeDeepStructuredReview(
+          ctx,
+          model,
+          deepKind,
+          input.repoRoot,
+          input.targetLabel,
+          input.focusText,
+          input.reviewInput,
+          effectiveThinkingLevel,
+          inspectionNotes,
+          loader.signal,
+        )
+          .then((value) => done({ status: "ok", value }))
+          .catch((error) => {
+            console.error(`[pi-codex] ${title} failed:`, error);
+            const message = error instanceof Error ? error.message : String(error);
+            done({ status: "error", message });
+          });
+
+        return loader;
       });
+
+      if (result.status === "cancelled") {
+        throw new Error("Review cancelled.");
+      }
+      if (result.status === "error") {
+        throw new Error(result.message);
+      }
+      return result.value;
     })();
   const completedAt = new Date().toISOString();
   const run: StoredReviewRun = {
@@ -905,29 +1552,4 @@ export async function executePreparedReviewRun(
   }
 
   return run;
-}
-
-export async function executeReviewRun(
-  ctx: ExtensionCommandContext,
-  settings: CodexSettings,
-  kind: CodexReviewKind,
-  options: ReviewCommandOptions,
-): Promise<StoredReviewRun> {
-  const target = resolveReviewTarget(ctx.cwd, {
-    scope: options.scope ?? settings.defaultReviewScope,
-    base: options.base,
-  });
-  const reviewContext = collectReviewContext(ctx.cwd, target);
-  return executePreparedReviewRun(ctx, settings, {
-    kind,
-    repoRoot: reviewContext.repoRoot,
-    branch: reviewContext.branch,
-    targetLabel: reviewContext.target.label,
-    targetMode: reviewContext.target.mode,
-    targetBaseRef: reviewContext.target.baseRef,
-    reviewInput: reviewContext.content,
-    modelSpec: options.modelSpec,
-    thinkingLevel: options.thinkingLevel,
-    focusText: options.focusText,
-  });
 }

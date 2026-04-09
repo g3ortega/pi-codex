@@ -32,23 +32,51 @@ That gives the package strong write and shell safety defaults without taking ove
 
 - `pi-web-access`
 
-`/codex:research` automatically adapts to active PI research tools such as `web_search`, `code_search`, `fetch_content`, and `get_search_content` when that package is installed and enabled.
+`/codex:research` prefers native OpenAI/Codex `web_search` automatically when the selected model/provider supports it. PI research tools such as `web_search`, `code_search`, `fetch_content`, and `get_search_content` remain useful fallback or adjunct tools when they are installed and enabled.
 
 ## Commands
 
-- `/codex:review` for structured repository review
-- `/codex:adversarial-review` for harsher, no-ship-oriented review
-- `/codex:adversarial_mental_models_review` for a deeper multi-lens adversarial review
-- `/codex:research` for evidence-first investigation
-- `/codex:task` for inline or background implementation work
-- `/codex:status` for a single job or recent review status
-- `/codex:jobs` for background job overview
-- `/codex:result` for stored job or review output
-- `/codex:apply` for completed background write-task patches
-- `/codex:cancel` for active background jobs
-- `/codex:config` for merged `pi-codex` settings
+- `/codex:review`
+  Standard code review for the current change set.
+- `/codex:adversarial-review`
+  Stricter review that tries to find blocking or risky issues.
+- `/codex:adversarial_mental_models_review`
+  Deepest review mode. Uses multiple reasoning lenses and usually takes the longest.
+- `/codex:research`
+  Investigate a question, using repo evidence first and native Codex web search when available.
+- `/codex:task`
+  Ask Codex to inspect, diagnose, propose a patch, or implement work.
+- `/codex:status`
+  Show one running job, or recent review/job history for the current workspace.
+- `/codex:jobs`
+  List recent background jobs for the current workspace.
+- `/codex:result`
+  Open a saved result.
+- `/codex:apply`
+  Apply a saved background write-task patch back to the live repo.
+- `/codex:cancel`
+  Stop an active background job.
+- `/codex:config`
+  Show the active `pi-codex` settings for this session.
 
 PI command autocomplete can show common flags such as `--background`, `--scope`, `--readonly`, `--write`, `--model`, `--thinking`, and `--last`.
+
+Common flags:
+
+- `--background`
+  Run the work in the background and notify the current PI session when it finishes.
+- `--scope working-tree|branch`
+  Review the current checkout or the full branch diff.
+- `--base <ref>`
+  Base ref to compare against when you use `--scope branch`.
+- `--readonly`
+  Inspect and explain only. Do not edit files.
+- `--write`
+  Allow Codex to make code changes.
+- `--thinking off|minimal|low|medium|high|xhigh`
+  Set reasoning effort for this one run.
+- `--last`
+  Open the latest saved result in the current workspace without copying a job id.
 
 Alias commands are also registered:
 
@@ -132,7 +160,7 @@ Or add the package to `.pi/settings.json` manually:
 
 ## Usage
 
-Common retrieval flow:
+Quick result lookup:
 
 ```bash
 /codex:jobs
@@ -141,7 +169,7 @@ Common retrieval flow:
 /codex:result <job-id>
 ```
 
-Run a structured review of the current repository state:
+Run a standard review:
 
 ```bash
 /codex:review
@@ -151,11 +179,12 @@ Run a structured review of the current repository state:
 /codex:review --background --scope working-tree
 ```
 
-`/codex:review` stays non-steerable by design. If you want to challenge a specific decision or risk area, use `/codex:adversarial-review`.
+`/codex:review` is intentionally unsteered so Codex can judge the overall change on its own. If you want to push on a specific concern or force a harsher pass, use `/codex:adversarial-review`.
 
-Review prompts are tuned to keep looking for a compact set of all supportable material issues in the changed surfaces, not just the first plausible finding. For the deepest pass, prefer `--thinking xhigh`.
+Review prompts are tuned to keep looking for a compact set of all supportable material issues in the changed surfaces, not just the first plausible finding. Standard review and adversarial review now run an internal draft-plus-synthesis cycle before finalizing. For the deepest pass, prefer `--thinking xhigh`.
+Background `review` and `adversarial-review` workers now run as read-only agentic reviewers with `read`, `grep`, `find`, `ls`, and inspection-only `bash` for commands such as `git diff`, `git show`, `git log`, `git status`, `git blame`, and `git merge-base`. Installed web research tools are also activated in the detached worker by default when they are available.
 
-Run a harsher blocking review:
+Run a stricter review:
 
 ```bash
 /codex:adversarial-review
@@ -164,18 +193,18 @@ Run a harsher blocking review:
 /codex:adversarial-review --background --scope branch
 ```
 
-`/codex:adversarial-review` stays the lighter adversarial review mode, but it is now tuned to keep checking adjacent risky surfaces instead of stopping at the first plausible issue.
+Use `/codex:adversarial-review` when you want Codex to challenge the patch, look for no-ship issues, and spend more time disproving correctness.
 
-Run the deepest adversarial review:
+Run the deepest review:
 
 ```bash
 /codex:adversarial_mental_models_review --thinking xhigh
 /codex:adversarial_mental_models_review --background --scope working-tree
 ```
 
-`/codex:adversarial_mental_models_review` runs a deeper adversarial review pipeline: Inverter, Boundary Prober, and Invariant Auditor passes run in parallel, then a final aggregation pass merges corroborated findings, ruled-out concerns, and remaining uncertainties into one stored review result.
+Use `/codex:adversarial_mental_models_review` when you want the slowest and deepest pass. It runs multiple adversarial lenses in parallel, then combines corroborated findings, ruled-out concerns, and uncertainties into one review.
 
-Queue a Codex-oriented implementation request into the active PI session:
+Run a task:
 
 ```bash
 /codex:task investigate why auth refresh sometimes fails
@@ -186,42 +215,42 @@ Queue a Codex-oriented implementation request into the active PI session:
 /codex:task --background --write implement the auth refresh retry fix
 ```
 
-`/codex:task` now treats `--readonly`, `--write`, `--background`, `--model`, and `--thinking` as host-side execution flags instead of forwarding them into the natural-language task text.
+`/codex:task` treats `--readonly`, `--write`, `--background`, `--model`, and `--thinking` as command flags. They change how the task runs; they are not forwarded into the task text.
 
 Current task boundary:
 
-- inline `/codex:task` runs in the current PI session
-- if you omit `--thinking`, inline and background tasks inherit the current PI session thinking level
-- inline `/codex:task --thinking ...` temporarily overrides the current PI session thinking level for the injected turn only; if the agent is already streaming, use `--background` or wait until the session is idle
-- `--readonly` keeps the task read-only and asks for diagnosis or a proposed patch instead of edits
-- `--write` is explicit but matches the current default inline behavior
-- `/codex:task --background --readonly ...` runs in a detached readonly worker and notifies the originating PI session on completion
-- `/codex:task --background --write ...` runs in a detached write-capable worker inside an isolated git worktree and returns a stored patch artifact
-- apply a completed write-task patch back to the live repo with `/codex:apply <job-id>`
-- background `task-write` currently uses `read`, `grep`, `find`, `ls`, `edit`, and `write`, plus any already-active web tools. `bash` is intentionally not exposed in this worker profile yet.
+- Inline `/codex:task` runs in the current PI session.
+- If you omit `--thinking`, inline and background tasks inherit the current PI session thinking level.
+- Inline `/codex:task --thinking ...` temporarily changes the current PI session thinking level for that injected turn only. If the agent is already busy, use `--background` instead.
+- `--readonly` asks for inspection, diagnosis, or a proposed patch without editing files.
+- `--write` allows code changes.
+- `/codex:task --background --readonly ...` runs in a detached read-only worker and notifies the current PI session when it finishes.
+- `/codex:task --background --write ...` runs in a detached write-capable worker inside an isolated git worktree and saves a patch artifact instead of touching the live repo directly.
+- Apply a completed write-task patch with `/codex:apply <job-id>`.
 
-Queue a Codex-oriented research request into the active PI session:
+Run research:
 
 ```bash
 /codex:research compare PI extension APIs with Codex CLI and verify current web-tooling options
 /codex:research --thinking high compare PI extension APIs with Codex CLI and verify current web-tooling options
-/codex:research deeply inspect the repo, then use web tools if available to validate the best package architecture
+/codex:research deeply inspect the repo, then use native web search or fallback web tools to validate the best package architecture
 /codex:research --background summarize the repo and key commands
 /codex:research --background --thinking xhigh summarize the repo and key commands
 ```
 
 Background research runs in a detached PI child session with a headless-safe tool surface:
 
-- safe read-only built-ins: `read`, `grep`, `find`, `ls`
-- active web research tools only when they were already active in the launching PI session
+- safe read-only built-ins: `read`, `grep`, `find`, `ls`, `bash`
+- native OpenAI/Codex `web_search` enabled by default on supported Responses models
+- installed web research tools remain available as fallback or adjuncts when native web search is unavailable
 - no mutation tools in the detached child
 
 Current research boundary:
 
-- inline `/codex:research` runs in the current PI session
-- if you omit `--thinking`, inline and background research inherit the current PI session thinking level
-- inline `/codex:research --thinking ...` temporarily overrides the current PI session thinking level for the injected turn only; if the agent is already streaming, use `--background` or wait until the session is idle
-- background `/codex:research --thinking ...` runs in a detached readonly worker and preserves the selected thinking level in job launch, status, and result views
+- Inline `/codex:research` runs in the current PI session.
+- If you omit `--thinking`, inline and background research inherit the current PI session thinking level.
+- Inline `/codex:research --thinking ...` temporarily changes the current PI session thinking level for that injected turn only. If the agent is already busy, use `--background` instead.
+- Background `/codex:research --thinking ...` runs in a detached read-only worker and keeps the selected thinking level visible in launch, status, and result views.
 
 All major `pi-codex` workflows accept `--thinking off|minimal|low|medium|high|xhigh`:
 
@@ -234,7 +263,7 @@ All major `pi-codex` workflows accept `--thinking off|minimal|low|medium|high|xh
 When omitted, `pi-codex` inherits the current PI session thinking level and clamps it to the selected model's capabilities.
 
 Background jobs notify the originating PI session when they complete, fail, or are cancelled, so you can keep working in the main thread without polling.
-Short stored results are inlined directly into the completion notification; longer results show an answer-first preview with exact follow-up commands such as `/codex:result --last`, `/codex:result <job-id>`, or `/codex:apply <job-id>`.
+Short results are inlined directly into the completion notification. Longer results show a short preview plus follow-up commands such as `/codex:result --last`, `/codex:result <job-id>`, or `/codex:apply <job-id>`.
 Detached research and task workers use a progress-aware watchdog: they fail on prolonged inactivity, but ongoing session activity extends the run up to a larger hard cap.
 Background job status and stored results include queue delay, run duration, and total duration. Stored synchronous review results include total duration as well.
 

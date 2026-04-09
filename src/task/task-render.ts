@@ -41,7 +41,7 @@ export function renderStoredTaskMarkdown(job: TaskBackgroundJob, result: TaskJob
     "",
     result.request,
     "",
-    "Background tool surface:",
+    "Tools used in the background worker:",
     ...bulletList(result.activeToolNames.map((value) => `Active: ${value}`)),
   );
 
@@ -61,7 +61,7 @@ export function renderStoredTaskMarkdown(job: TaskBackgroundJob, result: TaskJob
     if ((result.diffStat ?? job.diffStat)?.trim()) {
       lines.push("", "Diff stat:", "", result.diffStat ?? job.diffStat ?? "");
     }
-    lines.push("", `Apply this stored patch to the live repository with \`/codex:apply ${job.id}\`.`);
+    lines.push("", `Apply this saved patch to the live repository with \`/codex:apply ${job.id}\`.`);
   }
 
   lines.push("", "Final answer:", "", result.finalText.trim());

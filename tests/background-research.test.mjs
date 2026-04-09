@@ -12,7 +12,7 @@ import {
 
 const ROOT = path.dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 
-test("background research tool plan keeps safe builtins and active web extensions only", () => {
+test("background research tool plan keeps safe read-only builtins and activates available web extensions by default", () => {
   const tools = [
     { name: "read", sourceInfo: { source: "builtin", path: "<builtin:read>" } },
     { name: "grep", sourceInfo: { source: "builtin", path: "<builtin:grep>" } },
@@ -36,11 +36,40 @@ test("background research tool plan keeps safe builtins and active web extension
 
   const plan = buildBackgroundResearchToolPlan(pi);
 
-  assert.deepEqual(plan.safeBuiltinTools, ["read", "grep", "find", "ls"]);
-  assert.deepEqual(plan.requestedToolNames, ["fetch_content", "find", "grep", "ls", "read", "web_search"]);
-  assert.deepEqual(plan.extensionPaths, ["/tmp/web-access/index.ts"]);
+  assert.deepEqual(plan.safeBuiltinTools, ["read", "grep", "find", "ls", "bash"]);
+  assert.deepEqual(plan.activatedWebTools, ["code_search", "fetch_content", "web_search"]);
+  assert.deepEqual(plan.requestedToolNames, ["bash", "code_search", "fetch_content", "find", "grep", "ls", "read", "web_search"]);
+  assert.deepEqual(plan.extensionPaths, ["/tmp/code-search/index.ts", "/tmp/web-access/index.ts"]);
   assert.deepEqual(plan.interactiveSnapshot.activeWebTools, ["fetch_content", "web_search"]);
   assert.deepEqual(plan.interactiveSnapshot.activeMutationTools, ["edit"]);
+});
+
+test("background research tool plan prefers native Codex web search over bash or extension web tools when available", () => {
+  const tools = [
+    { name: "read", sourceInfo: { source: "builtin", path: "<builtin:read>" } },
+    { name: "grep", sourceInfo: { source: "builtin", path: "<builtin:grep>" } },
+    { name: "find", sourceInfo: { source: "builtin", path: "<builtin:find>" } },
+    { name: "ls", sourceInfo: { source: "builtin", path: "<builtin:ls>" } },
+    { name: "bash", sourceInfo: { source: "builtin", path: "<builtin:bash>" } },
+    { name: "web_search", sourceInfo: { source: "extension", path: "/tmp/web-access/index.ts" } },
+  ];
+
+  const pi = {
+    getActiveTools() {
+      return ["read", "bash", "web_search"];
+    },
+    getAllTools() {
+      return tools;
+    },
+  };
+
+  const plan = buildBackgroundResearchToolPlan(pi, { nativeWebSearchAvailable: true });
+
+  assert.deepEqual(plan.safeBuiltinTools, ["read", "grep", "find", "ls"]);
+  assert.deepEqual(plan.activatedWebTools, []);
+  assert.deepEqual(plan.requestedToolNames, ["find", "grep", "ls", "read"]);
+  assert.deepEqual(plan.extensionPaths, []);
+  assert.deepEqual(plan.interactiveSnapshot.activeLocalEvidenceTools, ["read"]);
 });
 
 test("research tool inspection from explicit names reflects only the activated child surface", () => {
@@ -117,7 +146,7 @@ test("background cancellation uses process groups and workers honor cancelling b
   assert.match(reviewSource, /cancelled before persisting a result/);
   assert.match(researchSource, /latestJob\?\.status === "cancelled" \|\| latestJob\?\.status === "cancelling"/);
   assert.match(researchSource, /cancelled before persisting a result/);
-  assert.match(renderSource, /Cancellation was requested\. Waiting for the background/);
+  assert.match(renderSource, /Cancellation requested\. Waiting for the background/);
 });
 
 test("status, result, and cancel handlers degrade ambiguous job and stored-review prefixes to warning reports", () => {

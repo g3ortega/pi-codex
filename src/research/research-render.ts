@@ -40,7 +40,8 @@ export function renderStoredResearchMarkdown(job: ResearchBackgroundJob, result:
     "",
     job.request,
     "",
-    "Background tool surface:",
+    "Tools used in the background worker:",
+    `- Native Codex web search: ${job.nativeWebSearchEnabled ? "enabled" : "disabled"}`,
     ...bulletList(result.activeToolNames.map((value) => `Active: ${value}`)),
   );
 

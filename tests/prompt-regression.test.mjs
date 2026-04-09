@@ -81,6 +81,9 @@ test("review runtime prompts stay aligned with the structured review schema", ()
       "<coverage_expectations>",
       "<dig_deeper_nudge>",
       "<verification_loop>",
+      "<candidate_review>",
+      "<adjacent_evidence>",
+      "<inspection_method>",
       "<structured_output_contract>",
       "<grounding_rules>",
       "<calibration_rules>",
@@ -88,6 +91,12 @@ test("review runtime prompts stay aligned with the structured review schema", ()
       "\"approve\" | \"needs-attention\"",
       "Write the summary like a terse ship/no-ship assessment, not a neutral recap.",
       "Do not stop after the first strong finding if other material issues are supportable from the provided context.",
+      "Treat the candidate review as provisional.",
+      "Final synthesis pass returned invalid structured output, so the first-pass review was kept.",
+      "Keep the inspection bounded",
+      "Keep the inspection proportional to the change radius.",
+      "inspect multiple independent high-risk surfaces before you stop",
+      "Use blame or older history only when it is needed to confirm or dismiss a specific regression hypothesis.",
     ],
     "review runtime prompts",
   );
@@ -107,9 +116,12 @@ test("adversarial review runtime prompt keeps the attack surface and deeper-chec
       "<coverage_expectations>",
       "<dig_deeper_nudge>",
       "<verification_loop>",
+      "<candidate_review>",
+      "<adjacent_evidence>",
       "Actively try to disprove the change.",
       "Do not stop after the first strong finding if other material issues are supportable from the provided context.",
       "adversarial rather than stylistic",
+      "Actively look for missing no-ship risks, overstatements, and hidden dependency assumptions.",
     ],
     "adversarial review runtime prompt",
   );
@@ -124,6 +136,7 @@ test("mental-models review runtime prompt keeps the three-lens and aggregation s
       "boundary-prober",
       "invariant-auditor",
       "<aggregation_rules>",
+      "<adjacent_evidence>",
       "\"ruled_out\": string[]",
       "\"uncertainties\": string[]",
       "In finding bodies, mention corroborating lenses when more than one lens supports the issue.",
@@ -184,6 +197,9 @@ test("public prompt templates cover all packaged workflows with the same core co
       "<dig_deeper_nudge>",
       "<verification_loop>",
       "Prefer PI read-only tools (`find`, `ls`, `grep`, `read`) for repository inspection.",
+      "Keep the inspection bounded to the changed files",
+      "Keep the inspection proportional to the change radius.",
+      "inspect multiple independent high-risk surfaces before you stop",
       "/codex:review",
     ],
     "codex-prompt-review prompt template",
@@ -201,6 +217,9 @@ test("public prompt templates cover all packaged workflows with the same core co
       "<dig_deeper_nudge>",
       "<verification_loop>",
       "Prefer PI read-only tools (`find`, `ls`, `grep`, `read`) for repository inspection.",
+      "Keep the inspection bounded to the changed files",
+      "Keep the inspection proportional to the change radius.",
+      "inspect multiple independent high-risk surfaces before you stop",
       "/codex:adversarial-review",
     ],
     "codex-prompt-adversarial-review prompt template",
@@ -230,13 +249,13 @@ test("standard review remains non-steerable and the README documents that bounda
     extensionSource,
     [
       "kind === \"review\" && options.focusText",
-      "stays non-steerable",
+      "is intentionally unsteered",
       "`/codex:adversarial-review",
     ],
     "review command routing",
   );
 
-  assert.match(readme, /`\/codex:review` stays non-steerable by design/i);
+  assert.match(readme, /`\/codex:review` is intentionally unsteered/i);
 });
 
 test("legacy hyphen command names are blocked and prompt references live outside PI auto-discovery paths", () => {

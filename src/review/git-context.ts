@@ -22,6 +22,10 @@ export interface ReviewContext {
 }
 
 const MAX_UNTRACKED_BYTES = 24 * 1024;
+const MAX_REVIEW_DIFF_CHARS = 600_000;
+const GIT_MAX_BUFFER_BYTES = 128 * 1024 * 1024;
+const MAX_INLINE_BRANCH_TOTAL_BLOB_BYTES = 2 * 1024 * 1024;
+const MAX_INLINE_BRANCH_SINGLE_FILE_BYTES = 512 * 1024;
 
 type RunResult = {
   status: number;
@@ -35,6 +39,7 @@ function runGit(cwd: string, args: string[]): RunResult {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: GIT_MAX_BUFFER_BYTES,
   });
 
   return {
@@ -70,6 +75,148 @@ function isProbablyText(buffer: Buffer): boolean {
 
 function formatSection(title: string, body: string): string {
   return [`## ${title}`, "", body.trim() ? body.trim() : "(none)", ""].join("\n");
+}
+
+function summarizeOmittedDiff(label: string, diff: string): string {
+  const lines = diff.split("\n").length;
+  return [
+    `${label} omitted from inline review context because it is too large (${diff.length.toLocaleString()} characters, ${lines.toLocaleString()} lines).`,
+    "Use the change map and read-only git inspection tools to inspect the highest-risk files on demand.",
+  ].join("\n");
+}
+
+function summarizeEstimatedOmittedDiff(label: string, reason: string): string {
+  return [
+    `${label} omitted from inline review context because it is too large (${reason}).`,
+    "Use the change map and read-only git inspection tools to inspect the highest-risk files on demand.",
+  ].join("\n");
+}
+
+function maybeInlineDiff(label: string, diff: string): string {
+  if (diff.length <= MAX_REVIEW_DIFF_CHARS) {
+    return diff;
+  }
+  return summarizeOmittedDiff(label, diff);
+}
+
+type BranchChangedPath = {
+  status: string;
+  path: string;
+  previousPath?: string;
+};
+
+function parseNameStatusZ(output: string): BranchChangedPath[] {
+  const parts = output.split("\0").filter(Boolean);
+  const entries: BranchChangedPath[] = [];
+
+  for (let index = 0; index < parts.length;) {
+    const statusToken = parts[index++];
+    if (!statusToken) {
+      continue;
+    }
+
+    const status = statusToken[0];
+    if (status === "R" || status === "C") {
+      const previousPath = parts[index++];
+      const path = parts[index++];
+      if (previousPath && path) {
+        entries.push({ status, previousPath, path });
+      }
+      continue;
+    }
+
+    const path = parts[index++];
+    if (path) {
+      entries.push({ status, path });
+    }
+  }
+
+  return entries;
+}
+
+function gitBlobSizes(cwd: string, objectSpecs: string[]): Map<string, number | null> {
+  const uniqueSpecs = [...new Set(objectSpecs.filter(Boolean))];
+  const sizes = new Map<string, number | null>();
+  if (uniqueSpecs.length === 0) {
+    return sizes;
+  }
+
+  const result = spawnSync("git", ["cat-file", "--batch-check=%(objectname) %(objectsize)", "-z"], {
+    cwd,
+    input: `${uniqueSpecs.join("\0")}\0`,
+    encoding: "utf8",
+    stdio: ["pipe", "pipe", "pipe"],
+    maxBuffer: GIT_MAX_BUFFER_BYTES,
+  });
+
+  if ((result.status ?? 1) !== 0) {
+    for (const objectSpec of uniqueSpecs) {
+      sizes.set(objectSpec, null);
+    }
+    return sizes;
+  }
+
+  const lines = (result.stdout ?? "").split("\n");
+  for (const [index, objectSpec] of uniqueSpecs.entries()) {
+    const line = lines[index]?.trim() ?? "";
+    const match = line.match(/^\S+\s+(\d+)$/);
+    if (!match) {
+      sizes.set(objectSpec, null);
+      continue;
+    }
+
+    const size = Number.parseInt(match[1], 10);
+    sizes.set(objectSpec, Number.isFinite(size) && size >= 0 ? size : null);
+  }
+
+  return sizes;
+}
+
+function estimateBranchDiffTooLarge(
+  cwd: string,
+  mergeBase: string,
+  changedPaths: BranchChangedPath[],
+): { omit: boolean; reason?: string } {
+  const candidateSpecsByEntry = changedPaths.map((entry) =>
+    entry.status === "A"
+      ? [`HEAD:${entry.path}`]
+      : entry.status === "D"
+        ? [`${mergeBase}:${entry.path}`]
+        : entry.previousPath
+          ? [`${mergeBase}:${entry.previousPath}`, `HEAD:${entry.path}`]
+          : [`${mergeBase}:${entry.path}`, `HEAD:${entry.path}`],
+  );
+  const blobSizes = gitBlobSizes(cwd, candidateSpecsByEntry.flat());
+
+  let totalBlobBytes = 0;
+  for (const [index, entry] of changedPaths.entries()) {
+    const candidateSpecs = candidateSpecsByEntry[index] ?? [];
+    let largestBlobBytes = 0;
+    for (const objectSpec of candidateSpecs) {
+      const size = blobSizes.get(objectSpec) ?? null;
+      if (size != null && size > largestBlobBytes) {
+        largestBlobBytes = size;
+      }
+    }
+
+    totalBlobBytes += largestBlobBytes;
+
+    if (largestBlobBytes >= MAX_INLINE_BRANCH_SINGLE_FILE_BYTES) {
+      return {
+        omit: true,
+        reason: `${entry.path} is ${largestBlobBytes.toLocaleString()} bytes, above the inline single-file threshold`,
+      };
+    }
+
+    if (totalBlobBytes >= MAX_INLINE_BRANCH_TOTAL_BLOB_BYTES) {
+      return {
+        omit: true,
+        reason: `changed file blobs total ${totalBlobBytes.toLocaleString()} bytes, above the inline branch-review threshold`,
+      };
+    }
+  }
+
+  return { omit: false };
 }
 
 export function ensureGitRepository(cwd: string): string {
@@ -221,8 +368,8 @@ function collectWorkingTreeContext(cwd: string, state: ReturnType<typeof getWork
     summary: `Reviewing ${state.staged.length} staged, ${state.unstaged.length} unstaged, and ${state.untracked.length} untracked file(s).`,
     content: [
       formatSection("Git Status", status),
-      formatSection("Staged Diff", stagedDiff),
-      formatSection("Unstaged Diff", unstagedDiff),
+      formatSection("Staged Diff", maybeInlineDiff("Staged diff", stagedDiff)),
+      formatSection("Unstaged Diff", maybeInlineDiff("Unstaged diff", unstagedDiff)),
       formatSection("Untracked Files", untrackedBody),
     ].join("\n"),
   };
@@ -234,7 +381,15 @@ function collectBranchContext(cwd: string, baseRef: string) {
   const currentBranch = getCurrentBranch(cwd);
   const logOutput = runGitChecked(cwd, ["log", "--oneline", "--decorate", commitRange]).trim();
   const diffStat = runGitChecked(cwd, ["diff", "--stat", commitRange]).trim();
-  const diff = runGitChecked(cwd, ["diff", "--binary", "--no-ext-diff", "--submodule=diff", commitRange]);
+  const changedFiles = runGitChecked(cwd, ["diff", "--name-status", commitRange]).trim();
+  const changedPaths = parseNameStatusZ(runGitChecked(cwd, ["diff", "--name-status", "-z", commitRange]));
+  const diffEstimate = estimateBranchDiffTooLarge(cwd, mergeBase, changedPaths);
+  const branchDiff = diffEstimate.omit
+    ? summarizeEstimatedOmittedDiff("Branch diff", diffEstimate.reason ?? "estimated branch diff exceeds the inline review threshold")
+    : maybeInlineDiff(
+      "Branch diff",
+      runGitChecked(cwd, ["diff", "--binary", "--no-ext-diff", "--submodule=diff", commitRange]),
+    );
 
   return {
     mode: "branch" as const,
@@ -242,7 +397,8 @@ function collectBranchContext(cwd: string, baseRef: string) {
     content: [
       formatSection("Commit Log", logOutput),
       formatSection("Diff Stat", diffStat),
-      formatSection("Branch Diff", diff),
+      formatSection("Changed Files", changedFiles),
+      formatSection("Branch Diff", branchDiff),
     ].join("\n"),
   };
 }
