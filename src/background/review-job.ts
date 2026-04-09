@@ -8,15 +8,18 @@ import type { CodexSettings } from "../config/codex-settings.js";
 import { createSessionActivityWatchdog } from "./session-activity.js";
 import {
   appendJobLog,
+  cancelBackgroundJob,
   createReviewBackgroundJob,
   generateJobId,
   getJobLogFile,
   getJobResultFile,
   getJobResultJsonFile,
+  markBackgroundJobNotified,
   getJobSessionDir,
   getJobSnapshotFile,
   readBackgroundJob,
   readBackgroundJobById,
+  readReviewJobResult,
   readReviewSnapshot,
   updateBackgroundJob,
   writeReviewJobResult,
@@ -35,6 +38,7 @@ import {
   executePreparedReviewRun,
   generateInspectionSeedNotesWithCompletion,
   requireModelAuth,
+  reviewAbortError,
   resolveModel,
   type ReviewCommandOptions,
 } from "../review/review-runner.js";
@@ -46,7 +50,7 @@ const CURRENT_EXTENSION_PATH = fileURLToPath(new URL("../../extensions/core/inde
 const MAX_REVIEW_JOB_DURATION_MS = 15 * 60 * 1_000;
 const MAX_REVIEW_JOB_IDLE_MS = 5 * 60 * 1_000;
 const MAX_MENTAL_MODELS_REVIEW_JOB_DURATION_MS = 25 * 60 * 1_000;
-const MAX_FOREGROUND_AGENTIC_REVIEW_DURATION_MS = 20 * 60 * 1_000;
+const FOREGROUND_REVIEW_POLL_INTERVAL_MS = 250;
 
 type ReviewJobRuntime = {
   executeReview?: typeof executePreparedReviewRun;
@@ -589,54 +593,86 @@ export async function executeForegroundReviewRun(
   if (!idle) {
     throw new Error("Foreground Codex reviews only run when the current PI session is idle.");
   }
-  const target = resolveReviewTarget(ctx.cwd, {
-    scope: options.scope ?? settings.defaultReviewScope,
-    base: options.base,
+  const job = await launchBackgroundReviewJob(pi, ctx, settings, kind, options);
+  markBackgroundJobNotified(job.workspaceRoot, job.id, job.originSessionId);
+  return waitForForegroundReviewJobResult(job, ctx.signal);
+}
+
+export async function waitForForegroundReviewJobResult(
+  job: ReviewBackgroundJob,
+  signal?: AbortSignal,
+): Promise<StoredReviewRun> {
+  return await new Promise<StoredReviewRun>((resolve, reject) => {
+    let settled = false;
+    let interval: ReturnType<typeof setInterval> | null = null;
+
+    const cleanup = () => {
+      if (interval) {
+        clearInterval(interval);
+        interval = null;
+      }
+      if (signal) {
+        signal.removeEventListener("abort", abortHandler);
+      }
+    };
+
+    const settle = (handler: () => void) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      handler();
+    };
+
+    const abortHandler = () => {
+      cancelBackgroundJob(job.workspaceRoot, job.id);
+      settle(() => reject(reviewAbortError(signal)));
+    };
+
+    const poll = () => {
+      const current = readBackgroundJob(job.workspaceRoot, job.id);
+      if (!current || current.jobClass !== "review") {
+        settle(() => reject(new Error(`Foreground review job "${job.id}" disappeared before producing a result.`)));
+        return;
+      }
+
+      switch (current.status) {
+        case "completed": {
+          const payload = readReviewJobResult(current.workspaceRoot, current.id);
+          const reviewRun = payload?.reviewRun;
+          if (!reviewRun) {
+            settle(() => reject(new Error(`Foreground review job "${current.id}" completed without a stored review result.`)));
+            return;
+          }
+          settle(() => resolve(reviewRun));
+          return;
+        }
+        case "failed":
+        case "lost":
+          settle(() => reject(new Error(current.errorMessage ?? `Foreground review job "${current.id}" ${current.status}.`)));
+          return;
+        case "cancelled":
+          settle(() => reject(reviewAbortError(signal)));
+          return;
+        default:
+          return;
+      }
+    };
+
+    if (signal?.aborted) {
+      abortHandler();
+      return;
+    }
+
+    signal?.addEventListener("abort", abortHandler, { once: true });
+    poll();
+    if (settled) {
+      return;
+    }
+    interval = setInterval(poll, FOREGROUND_REVIEW_POLL_INTERVAL_MS);
+    interval.unref?.();
   });
-  const reviewContext = collectReviewContext(ctx.cwd, target);
-  const model = resolveModel(ctx, settings, options.modelSpec);
-  await requireModelAuth(ctx, model);
-  const thinkingLevel = resolveEffectiveThinkingLevel(model, options.thinkingLevel);
-  const seedInspectionNotes = await generateInspectionSeedNotesWithCompletion(
-    ctx,
-    model,
-    reviewContext.target.label,
-    options.focusText,
-    reviewContext.content,
-    thinkingLevel,
-  );
-  const toolPlan = buildBackgroundReviewToolPlan(pi);
-  const availableToolNames = new Set(pi.getAllTools().map((tool) => tool.name));
-  const activeToolNames = toolPlan.requestedToolNames.filter((toolName) => availableToolNames.has(toolName));
-  const activeWebTools = toolPlan.activatedWebTools.filter((toolName) => availableToolNames.has(toolName));
-  const inspectionNotes = await executeAgenticInspectionNotes(pi, ctx, {
-    targetLabel: reviewContext.target.label,
-    focusText: options.focusText,
-    reviewInput: reviewContext.content,
-    seedInspectionNotes,
-    scopeRoot: reviewContext.repoRoot,
-    activeToolNames,
-    activeWebTools,
-    timeoutMs: MAX_FOREGROUND_AGENTIC_REVIEW_DURATION_MS,
-    maxToolCalls: inspectionToolCallBudgetForReview(kind, reviewContext.content),
-  });
-  return executePreparedReviewRun(
-    ctx,
-    settings,
-    {
-      kind,
-      repoRoot: reviewContext.repoRoot,
-      branch: reviewContext.branch,
-      targetLabel: reviewContext.target.label,
-      targetMode: reviewContext.target.mode,
-      targetBaseRef: reviewContext.target.baseRef,
-      reviewInput: reviewContext.content,
-      modelSpec: options.modelSpec,
-      thinkingLevel,
-      focusText: options.focusText,
-    },
-    { inspectionNotes },
-  );
 }
 
 function markCancelled(workspaceRoot: string, jobId: string, reason: string): ReviewBackgroundJob {

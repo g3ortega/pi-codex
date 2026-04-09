@@ -16,12 +16,16 @@ import {
   internalResearchJobCommandName,
   launchBackgroundResearchJob,
   runDetachedResearchJob,
+  suppressForegroundResearchJobNotification,
+  waitForForegroundResearchJobResult,
 } from "../../src/background/research-job.js";
 import {
   internalTaskJobCommandName,
   launchBackgroundReadonlyTaskJob,
   launchBackgroundWriteTaskJob,
   runDetachedTaskJob,
+  suppressForegroundTaskJobNotification,
+  waitForForegroundTaskJobResult,
 } from "../../src/background/task-job.js";
 import { splitLeadingOptionTokens, splitShellLikeArgs } from "../../src/runtime/arg-parser.js";
 import { detectBuiltinAlternativeForBash } from "../../src/runtime/bash-alternatives.js";
@@ -72,6 +76,8 @@ import {
   renderStoredReviewMarkdown,
   renderTaskQueuedMarkdown,
 } from "../../src/review/review-render.js";
+import { renderStoredTaskMarkdown } from "../../src/task/task-render.js";
+import { renderStoredResearchMarkdown } from "../../src/research/research-render.js";
 
 const IS_PRINT_MODE = process.argv.includes("-p") || process.argv.includes("--print");
 const LEGACY_PROMPT_ALIAS_TITLES: Record<string, string> = {
@@ -80,6 +86,11 @@ const LEGACY_PROMPT_ALIAS_TITLES: Record<string, string> = {
   "codex-task": "Codex Task",
   "codex-research": "Codex Research",
 };
+
+function shouldUseIsolatedForegroundWorker(ctx: Pick<ExtensionCommandContext, "hasUI" | "isIdle">): boolean {
+  const idle = typeof ctx.isIdle === "function" ? ctx.isIdle() : true;
+  return IS_PRINT_MODE || !ctx.hasUI || !idle;
+}
 
 function reportThemeName(variant: ReportDetails["variant"]): "customMessageBg" | "toolSuccessBg" | "toolPendingBg" | "toolErrorBg" {
   switch (variant) {
@@ -408,6 +419,8 @@ async function handleTaskCommand(
   pendingThinkingRestore: PendingThinkingRestoreState,
   agentLifecycle: AgentLifecycleState,
 ): Promise<boolean> {
+  void pendingThinkingRestore;
+  void agentLifecycle;
   const settings = loadCodexSettings(ctx.cwd);
   if (!settings.enableTaskCommand) {
     sendReport(pi, "Codex Task", "# Codex Task\n\nThis workspace has the task command turned off in its current Codex settings.\n", "warning");
@@ -430,6 +443,21 @@ async function handleTaskCommand(
       "Codex Task Job",
       renderBackgroundJobLaunchMarkdown(job),
       "info",
+    );
+    return false;
+  }
+
+  if (shouldUseIsolatedForegroundWorker(ctx)) {
+    const job = options.profile === "readonly"
+      ? await launchBackgroundReadonlyTaskJob(pi, ctx, settings, request, options.modelSpec, options.thinkingLevel)
+      : await launchBackgroundWriteTaskJob(pi, ctx, settings, request, options.modelSpec, options.thinkingLevel);
+    suppressForegroundTaskJobNotification(job);
+    const completed = await waitForForegroundTaskJobResult(job, ctx.signal);
+    sendReport(
+      pi,
+      "Codex Task",
+      renderStoredTaskMarkdown(completed.job, completed.result),
+      backgroundJobReportVariant(completed.job),
     );
     return false;
   }
@@ -471,6 +499,8 @@ async function handleResearchCommand(
   pendingThinkingRestore: PendingThinkingRestoreState,
   agentLifecycle: AgentLifecycleState,
 ): Promise<boolean> {
+  void pendingThinkingRestore;
+  void agentLifecycle;
   const settings = loadCodexSettings(ctx.cwd);
   if (!settings.enableResearchCommand) {
     sendReport(pi, "Codex Research", "# Codex Research\n\nThis workspace has the research command turned off in its current Codex settings.\n", "warning");
@@ -492,6 +522,19 @@ async function handleResearchCommand(
   if (options.background) {
     const job = await launchBackgroundResearchJob(pi, ctx, settings, request, options.modelSpec, options.thinkingLevel);
     sendReport(pi, "Codex Research Job", renderBackgroundJobLaunchMarkdown(job), "info");
+    return false;
+  }
+
+  if (shouldUseIsolatedForegroundWorker(ctx)) {
+    const job = await launchBackgroundResearchJob(pi, ctx, settings, request, options.modelSpec, options.thinkingLevel);
+    suppressForegroundResearchJobNotification(job);
+    const completed = await waitForForegroundResearchJobResult(job, ctx.signal);
+    sendReport(
+      pi,
+      "Codex Research",
+      renderStoredResearchMarkdown(completed.job, completed.result),
+      backgroundJobReportVariant(completed.job),
+    );
     return false;
   }
 

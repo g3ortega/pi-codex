@@ -5,9 +5,22 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { launchBackgroundResearchJob, runDetachedResearchJob } from "../src/background/research-job.ts";
-import { finalizeDetachedReviewRunnerExit, launchBackgroundReviewJob, runDetachedReviewJob } from "../src/background/review-job.ts";
-import { launchBackgroundReadonlyTaskJob, runDetachedTaskJob } from "../src/background/task-job.ts";
+import {
+  launchBackgroundResearchJob,
+  runDetachedResearchJob,
+  waitForForegroundResearchJobResult,
+} from "../src/background/research-job.ts";
+import {
+  finalizeDetachedReviewRunnerExit,
+  launchBackgroundReviewJob,
+  runDetachedReviewJob,
+  waitForForegroundReviewJobResult,
+} from "../src/background/review-job.ts";
+import {
+  launchBackgroundReadonlyTaskJob,
+  runDetachedTaskJob,
+  waitForForegroundTaskJobResult,
+} from "../src/background/task-job.ts";
 import {
   cancelBackgroundJob,
   createResearchBackgroundJob,
@@ -20,8 +33,12 @@ import {
   getJobSessionDir,
   getJobSnapshotFile,
   readBackgroundJob,
+  readResearchJobResult,
   readTaskJobResult,
   updateBackgroundJob,
+  writeResearchJobResult,
+  writeTaskJobResult,
+  writeReviewJobResult,
 } from "../src/runtime/job-store.ts";
 import { cleanupTaskWorktree, createTaskWorktree } from "../src/runtime/worktree.ts";
 
@@ -778,6 +795,241 @@ test("detached review runner fails with a terminal error when the model call exc
       assert.equal(stored?.status, "failed");
       assert.equal(stored?.phase, "failed");
       assert.match(stored?.errorMessage ?? "", /terminal review result/i);
+    });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("foreground task waits on an isolated task job result instead of the live PI session", async () => {
+  const root = makeTempDir("pi-codex-foreground-task-complete-");
+  const homeDir = path.join(root, "home");
+  const workspaceRoot = path.join(root, "workspace");
+  fs.mkdirSync(workspaceRoot, { recursive: true });
+
+  try {
+    await withHomeDir(homeDir, async () => {
+      const job = createTaskBackgroundJob(
+        buildTaskJob(workspaceRoot, {
+          id: "task-foreground-complete",
+          originSessionId: "session-a",
+        }),
+        buildTaskSnapshot(workspaceRoot),
+      );
+
+      setTimeout(() => {
+        writeTaskJobResult(workspaceRoot, job.id, {
+          request: "diagnose auth refresh",
+          profile: "readonly",
+          finalText: "Task finished in an isolated worker.",
+          activeToolNames: ["read", "grep"],
+          missingToolNames: [],
+        }, "# Codex Task\n\nTask finished in an isolated worker.\n");
+        updateBackgroundJob(workspaceRoot, job.id, (current) => ({
+          ...current,
+          status: "completed",
+          phase: "done",
+          updatedAt: iso(),
+          completedAt: iso(),
+          runnerPid: null,
+        }));
+      }, 25).unref?.();
+
+      const completed = await waitForForegroundTaskJobResult(job);
+      assert.equal(completed.result.finalText, "Task finished in an isolated worker.");
+      assert.equal(completed.job.status, "completed");
+      assert.equal(readTaskJobResult(workspaceRoot, job.id)?.finalText, "Task finished in an isolated worker.");
+    });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("foreground task cancellation stops the isolated task job and rejects cleanly", async () => {
+  const root = makeTempDir("pi-codex-foreground-task-cancel-");
+  const homeDir = path.join(root, "home");
+  const workspaceRoot = path.join(root, "workspace");
+  fs.mkdirSync(workspaceRoot, { recursive: true });
+
+  try {
+    await withHomeDir(homeDir, async () => {
+      const job = createTaskBackgroundJob(
+        buildTaskJob(workspaceRoot, {
+          id: "task-foreground-cancel",
+          status: "running",
+          phase: "agent-turn",
+          runnerPid: null,
+          startedAt: iso(),
+          lastHeartbeatAt: iso(),
+          originSessionId: "session-a",
+        }),
+        buildTaskSnapshot(workspaceRoot),
+      );
+
+      const controller = new AbortController();
+      const wait = waitForForegroundTaskJobResult(job, controller.signal);
+      controller.abort("Task cancelled.");
+
+      await assert.rejects(wait, /Task cancelled\./);
+      assert.equal(readBackgroundJob(workspaceRoot, job.id)?.status, "cancelling");
+    });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("foreground research waits on an isolated research job result instead of the live PI session", async () => {
+  const root = makeTempDir("pi-codex-foreground-research-complete-");
+  const homeDir = path.join(root, "home");
+  const workspaceRoot = path.join(root, "workspace");
+  fs.mkdirSync(workspaceRoot, { recursive: true });
+
+  try {
+    await withHomeDir(homeDir, async () => {
+      const job = createResearchBackgroundJob(
+        buildResearchJob(workspaceRoot, {
+          id: "research-foreground-complete",
+          originSessionId: "session-a",
+        }),
+        buildResearchSnapshot(workspaceRoot),
+      );
+
+      setTimeout(() => {
+        writeResearchJobResult(workspaceRoot, job.id, {
+          request: "investigate background mode",
+          finalText: "Research finished in an isolated worker.",
+          activeToolNames: ["read", "find"],
+          missingToolNames: [],
+        }, "# Codex Research\n\nResearch finished in an isolated worker.\n");
+        updateBackgroundJob(workspaceRoot, job.id, (current) => ({
+          ...current,
+          status: "completed",
+          phase: "done",
+          updatedAt: iso(),
+          completedAt: iso(),
+          runnerPid: null,
+        }));
+      }, 25).unref?.();
+
+      const completed = await waitForForegroundResearchJobResult(job);
+      assert.equal(completed.result.finalText, "Research finished in an isolated worker.");
+      assert.equal(completed.job.status, "completed");
+      assert.equal(readResearchJobResult(workspaceRoot, job.id)?.finalText, "Research finished in an isolated worker.");
+    });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("foreground research cancellation stops the isolated research job and rejects cleanly", async () => {
+  const root = makeTempDir("pi-codex-foreground-research-cancel-");
+  const homeDir = path.join(root, "home");
+  const workspaceRoot = path.join(root, "workspace");
+  fs.mkdirSync(workspaceRoot, { recursive: true });
+
+  try {
+    await withHomeDir(homeDir, async () => {
+      const job = createResearchBackgroundJob(
+        buildResearchJob(workspaceRoot, {
+          id: "research-foreground-cancel",
+          status: "running",
+          phase: "agent-turn",
+          runnerPid: null,
+          startedAt: iso(),
+          lastHeartbeatAt: iso(),
+          originSessionId: "session-a",
+        }),
+        buildResearchSnapshot(workspaceRoot),
+      );
+
+      const controller = new AbortController();
+      const wait = waitForForegroundResearchJobResult(job, controller.signal);
+      controller.abort("Research cancelled.");
+
+      await assert.rejects(wait, /Research cancelled\./);
+      assert.equal(readBackgroundJob(workspaceRoot, job.id)?.status, "cancelling");
+    });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("foreground review waits on an isolated review job result instead of the live PI session", async () => {
+  const root = makeTempDir("pi-codex-foreground-review-complete-");
+  const homeDir = path.join(root, "home");
+  const workspaceRoot = path.join(root, "workspace");
+  fs.mkdirSync(workspaceRoot, { recursive: true });
+
+  try {
+    await withHomeDir(homeDir, async () => {
+      const job = createReviewBackgroundJob(
+        buildReviewJob(workspaceRoot, {
+          id: "review-foreground-complete",
+          originSessionId: "session-a",
+        }),
+        buildReviewSnapshot(workspaceRoot),
+      );
+
+      const expectedRun = {
+        id: "review-foreground-complete",
+        kind: "review",
+        repoRoot: workspaceRoot,
+        branch: "main",
+        targetLabel: "working tree diff",
+        createdAt: iso(),
+        startedAt: iso(),
+        completedAt: iso(),
+        result: {
+          verdict: "approve",
+          summary: "Isolated foreground review completed.",
+          findings: [],
+          next_steps: [],
+        },
+      };
+
+      setTimeout(() => {
+        writeReviewJobResult(workspaceRoot, job.id, { reviewRun: expectedRun }, "# Codex Review\n\nIsolated foreground review completed.\n");
+        updateBackgroundJob(workspaceRoot, job.id, (current) => ({
+          ...current,
+          status: "completed",
+          phase: "done",
+          updatedAt: iso(),
+          completedAt: iso(),
+          runnerPid: null,
+        }));
+      }, 25).unref?.();
+
+      const run = await waitForForegroundReviewJobResult(job);
+      assert.equal(run.result?.summary, "Isolated foreground review completed.");
+      assert.equal(run.result?.verdict, "approve");
+    });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("foreground review cancellation stops the isolated review job and rejects cleanly", async () => {
+  const root = makeTempDir("pi-codex-foreground-review-cancel-");
+  const homeDir = path.join(root, "home");
+  const workspaceRoot = path.join(root, "workspace");
+  fs.mkdirSync(workspaceRoot, { recursive: true });
+
+  try {
+    await withHomeDir(homeDir, async () => {
+      const job = createReviewBackgroundJob(
+        buildReviewJob(workspaceRoot, {
+          id: "review-foreground-cancel",
+          originSessionId: "session-a",
+        }),
+        buildReviewSnapshot(workspaceRoot),
+      );
+      const controller = new AbortController();
+
+      const waiting = waitForForegroundReviewJobResult(job, controller.signal);
+      controller.abort("Review cancelled.");
+
+      await assert.rejects(waiting, /Review cancelled\./);
+      assert.equal(readBackgroundJob(workspaceRoot, job.id)?.status, "cancelling");
     });
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

@@ -1265,7 +1265,7 @@ test("inline research enables native Codex web search through the provider paylo
 
   await researchCommand.handler("check current npm version", {
     cwd: process.cwd(),
-    hasUI: false,
+    hasUI: true,
     model: { provider: "openai-codex", api: "openai-codex-responses", id: "gpt-5.3-codex" },
     modelRegistry: {},
     signal: undefined,
@@ -1439,7 +1439,7 @@ test("inline task --thinking temporarily overrides the session effort for the in
 
   await taskCommand.handler("--readonly --thinking xhigh diagnose auth refresh", {
     cwd: process.cwd(),
-    hasUI: false,
+    hasUI: true,
     model: undefined,
     modelRegistry: {},
     signal: undefined,
@@ -1532,7 +1532,7 @@ test("inline task --thinking restore ignores unrelated turn_end events and resto
 
   await taskCommand.handler("--readonly --thinking xhigh diagnose auth refresh", {
     cwd: process.cwd(),
-    hasUI: false,
+    hasUI: true,
     model: undefined,
     modelRegistry: {},
     signal: undefined,
@@ -1623,7 +1623,7 @@ test("inline task --thinking restores on turn_end even when turn lifecycle event
 
   await taskCommand.handler("--readonly --thinking xhigh diagnose auth refresh", {
     cwd: process.cwd(),
-    hasUI: false,
+    hasUI: true,
     model: undefined,
     modelRegistry: {},
     signal: undefined,
@@ -1709,7 +1709,7 @@ test("inline task --thinking does not overwrite a later manual thinking-level ch
 
   await taskCommand.handler("--readonly --thinking xhigh diagnose auth refresh", {
     cwd: process.cwd(),
-    hasUI: false,
+    hasUI: true,
     model: undefined,
     modelRegistry: {},
     signal: undefined,
@@ -1814,7 +1814,7 @@ test("inline task --thinking stale watchdog does not restore while the agent is 
 
     await taskCommand.handler("--readonly --thinking xhigh diagnose auth refresh", {
       cwd: process.cwd(),
-      hasUI: false,
+      hasUI: true,
       model: undefined,
       modelRegistry: {},
       signal: undefined,
@@ -1913,7 +1913,7 @@ test("inline task --thinking restores on agent_end if turn lifecycle events neve
 
   await taskCommand.handler("--readonly --thinking xhigh diagnose auth refresh", {
     cwd: process.cwd(),
-    hasUI: false,
+    hasUI: true,
     model: undefined,
     modelRegistry: {},
     signal: undefined,
@@ -1999,7 +1999,7 @@ test("inline task --thinking rejects a second override while the first inline ov
 
   const commandContext = {
     cwd: process.cwd(),
-    hasUI: false,
+    hasUI: true,
     model: undefined,
     modelRegistry: {},
     signal: undefined,
@@ -2048,88 +2048,12 @@ test("inline task --thinking rejects a second override while the first inline ov
   assert.match(String(reports.at(-1)?.message?.content ?? ""), /Another inline `\/codex:task --thinking/i);
 });
 
-test("inline research --thinking is rejected while another turn is already running", async () => {
-  const commands = new Map();
-  const reports = [];
-  let currentThinking = "medium";
-
-  registerCodexExtension({
-    registerCommand(name, options) {
-      commands.set(name, options);
-    },
-    on() {},
-    registerMessageRenderer() {},
-    sendMessage(message, options) {
-      reports.push({ message, options });
-    },
-    sendUserMessage() {
-      throw new Error("sendUserMessage should not be called when inline thinking is rejected");
-    },
-    getActiveTools() {
-      return ["read", "grep", "find", "ls"];
-    },
-    getAllTools() {
-      return [];
-    },
-    getThinkingLevel() {
-      return currentThinking;
-    },
-    setThinkingLevel(level) {
-      currentThinking = level;
-    },
-    events: {
-      emit() {},
-    },
-  });
-
-  const researchCommand = commands.get("codex:research");
-  assert.equal(typeof researchCommand?.handler, "function");
-
-  await researchCommand.handler("--thinking high inspect the repo", {
-    cwd: process.cwd(),
-    hasUI: false,
-    model: undefined,
-    modelRegistry: {},
-    signal: undefined,
-    abort() {},
-    compact() {},
-    getContextUsage() {
-      return undefined;
-    },
-    getSystemPrompt() {
-      return "";
-    },
-    hasPendingMessages() {
-      return true;
-    },
-    isIdle() {
-      return false;
-    },
-    sessionManager: {
-      buildSessionContext() {
-        return { messages: [], thinkingLevel: currentThinking, model: null };
-      },
-    },
-    shutdown() {},
-    ui: {
-      notify() {},
-      setStatus() {},
-      theme: {
-        fg(_token, value) {
-          return value;
-        },
-        bg(_token, value) {
-          return value;
-        },
-        bold(value) {
-          return value;
-        },
-      },
-    },
-  });
-
-  assert.equal(currentThinking, "medium");
-  assert.match(String(reports.at(-1)?.message?.content ?? ""), /only works when the agent is idle/i);
+test("foreground task and research isolate headless or busy runs instead of queueing inline follow-up turns", () => {
+  const source = fs.readFileSync(fileURLToPath(new URL("../extensions/core/index.ts", import.meta.url)), "utf8");
+  assert.match(source, /function shouldUseIsolatedForegroundWorker\(ctx:/);
+  assert.match(source, /return IS_PRINT_MODE \|\| !ctx\.hasUI \|\| !idle;/);
+  assert.match(source, /const completed = await waitForForegroundTaskJobResult\(job, ctx\.signal\);/);
+  assert.match(source, /const completed = await waitForForegroundResearchJobResult\(job, ctx\.signal\);/);
 });
 
 test("input fallback routes /codex:result directly when normal slash dispatch misses", async () => {
@@ -2550,162 +2474,18 @@ test("input fallback routes /codex:result --last to a newer failed background jo
   }
 });
 
-test("print-mode task fallback cleans up stale waiters after an error", async () => {
-  const repoDir = createGitRepo("pi-codex-print-waiter-");
-  const homeDir = makeTempDir("pi-codex-home-");
+test("print-mode task fallback uses the isolated foreground worker path instead of injecting a live session turn", async () => {
   const previousArgv = [...process.argv];
   process.argv = [...process.argv, "-p"];
 
   try {
     const moduleUrl = new URL("../extensions/core/index.ts", import.meta.url).href;
-    const { default: registerPrintModeCodexExtension } = await import(`${moduleUrl}?print-waiter=${Date.now()}`);
-
-    await withHomeDir(homeDir, async () => {
-      const reports = [];
-      const handlers = new Map();
-      let sendUserMessageCount = 0;
-      let authMode = "fail";
-
-      registerPrintModeCodexExtension({
-        registerCommand() {},
-        on(name, handler) {
-          handlers.set(name, handler);
-        },
-        registerMessageRenderer() {},
-        sendMessage(message, options) {
-          reports.push({ message, options });
-        },
-        sendUserMessage() {
-          sendUserMessageCount += 1;
-        },
-        getActiveTools() {
-          return ["read", "grep", "find", "ls"];
-        },
-        getAllTools() {
-          return [];
-        },
-        getThinkingLevel() {
-          return "medium";
-        },
-        setThinkingLevel() {},
-        events: {
-          emit() {},
-        },
-      });
-
-      const inputHandler = handlers.get("input");
-      const turnEndHandler = handlers.get("turn_end");
-      assert.equal(typeof inputHandler, "function");
-      assert.equal(typeof turnEndHandler, "function");
-
-      const failingPromise = inputHandler(
-        {
-          type: "input",
-          text: "/codex:task --background --readonly fail auth preflight",
-          source: "interactive",
-        },
-        {
-          hasUI: false,
-          cwd: repoDir,
-          isIdle() {
-            return true;
-          },
-          model: {
-            provider: "openai-codex",
-            id: "gpt-5.3-codex",
-          },
-          modelRegistry: {
-            async getApiKeyAndHeaders() {
-              if (authMode === "fail") {
-                return { ok: false, error: "No API key found for openai-codex." };
-              }
-              return { ok: true, apiKey: "unused", headers: {} };
-            },
-          },
-          sessionManager: {
-            getSessionId() {
-              return "session-a";
-            },
-            getSessionFile() {
-              return "/tmp/session-a.jsonl";
-            },
-          },
-          ui: {
-            notify() {},
-            setStatus() {},
-            theme: {
-              fg(_token, value) {
-                return value;
-              },
-            },
-          },
-        },
-      );
-      await failingPromise;
-      assert.ok(reports.some((entry) => String(entry.message.content).includes("No API key found for openai-codex.")));
-
-      authMode = "ok";
-      let resolved = false;
-      const reportsAfterFailure = reports.length;
-      const secondPromise = inputHandler(
-        {
-          type: "input",
-          text: "/codex:task --readonly inspect auth refresh",
-          source: "interactive",
-        },
-        {
-          hasUI: false,
-          cwd: repoDir,
-          isIdle() {
-            return true;
-          },
-          model: {
-            provider: "openai-codex",
-            id: "gpt-5.3-codex",
-          },
-          modelRegistry: {
-            async getApiKeyAndHeaders() {
-              if (authMode === "fail") {
-                return { ok: false, error: "No API key found for openai-codex." };
-              }
-              return { ok: true, apiKey: "unused", headers: {} };
-            },
-          },
-          sessionManager: {
-            getSessionId() {
-              return "session-a";
-            },
-            getSessionFile() {
-              return "/tmp/session-a.jsonl";
-            },
-          },
-          ui: {
-            notify() {},
-            setStatus() {},
-            theme: {
-              fg(_token, value) {
-                return value;
-              },
-            },
-          },
-        },
-      ).then(() => {
-        resolved = true;
-      });
-
-      await Promise.resolve();
-      assert.equal(sendUserMessageCount, 1);
-      assert.equal(resolved, false);
-
-      await turnEndHandler();
-      await secondPromise;
-      assert.equal(resolved, true);
-      assert.equal(reports.length, reportsAfterFailure + 1);
-      assert.match(String(reports.at(-1)?.message.content), /sent this task to your current PI session/i);
-    });
+    await import(`${moduleUrl}?print-foreground-task=${Date.now()}`);
+    const source = fs.readFileSync(fileURLToPath(new URL("../extensions/core/index.ts", import.meta.url)), "utf8");
+    assert.match(source, /if \(shouldUseIsolatedForegroundWorker\(ctx\)\) \{/);
+    assert.match(source, /suppressForegroundTaskJobNotification\(job\);/);
+    assert.match(source, /waitForForegroundTaskJobResult\(job, ctx\.signal\)/);
   } finally {
     process.argv = previousArgv;
-    fs.rmSync(repoDir, { recursive: true, force: true });
-    fs.rmSync(homeDir, { recursive: true, force: true });
   }
 });

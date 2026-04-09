@@ -10,6 +10,7 @@ import { getCurrentBranch, getRepoRoot } from "../review/git-context.js";
 import { requireModelAuth, resolveModel } from "../review/review-runner.js";
 import {
   appendJobLog,
+  cancelBackgroundJob,
   createTaskBackgroundJob,
   generateJobId,
   getJobLogFile,
@@ -18,7 +19,9 @@ import {
   getJobResultJsonFile,
   getJobSessionDir,
   getJobSnapshotFile,
+  markBackgroundJobNotified,
   readBackgroundJob,
+  readTaskJobResult,
   readTaskSnapshot,
   updateBackgroundJob,
   writeTaskJobResult,
@@ -52,6 +55,7 @@ const INTERNAL_TASK_JOB_COMMAND = "codex:internal-run-task-job";
 const CURRENT_EXTENSION_PATH = fileURLToPath(new URL("../../extensions/core/index.ts", import.meta.url));
 const MAX_TASK_JOB_DURATION_MS = 25 * 60 * 1_000;
 const MAX_TASK_JOB_IDLE_MS = 5 * 60 * 1_000;
+const FOREGROUND_TASK_POLL_INTERVAL_MS = 250;
 const WORKSPACE_ROOT_ENV = "PI_CODEX_WORKSPACE_ROOT";
 
 type AgentMessageLike = {
@@ -127,6 +131,20 @@ function extractAssistantText(messages: AgentMessageLike[] | undefined): string 
   }
 
   return "";
+}
+
+function taskAbortError(signal: AbortSignal | undefined, fallbackMessage = "Task cancelled."): Error {
+  const reason = signal?.reason;
+  if (reason instanceof Error) {
+    return reason;
+  }
+  if (typeof reason === "string" && reason.trim()) {
+    return new Error(reason.trim());
+  }
+  if (reason !== undefined) {
+    return new Error(String(reason));
+  }
+  return new Error(fallbackMessage);
 }
 
 function resolveJobWorkspaceRoot(cwd: string): string {
@@ -315,6 +333,86 @@ export async function launchBackgroundWriteTaskJob(
   explicitThinkingLevel?: CodexThinkingLevel,
 ): Promise<TaskBackgroundJob> {
   return launchBackgroundTaskJob(pi, ctx, settings, request, "write", explicitModel, explicitThinkingLevel);
+}
+
+export function suppressForegroundTaskJobNotification(job: TaskBackgroundJob): void {
+  markBackgroundJobNotified(job.workspaceRoot, job.id, job.originSessionId);
+}
+
+export async function waitForForegroundTaskJobResult(
+  job: TaskBackgroundJob,
+  signal?: AbortSignal,
+): Promise<{ job: TaskBackgroundJob; result: TaskJobResultPayload }> {
+  return await new Promise<{ job: TaskBackgroundJob; result: TaskJobResultPayload }>((resolve, reject) => {
+    let settled = false;
+    let interval: ReturnType<typeof setInterval> | null = null;
+
+    const cleanup = () => {
+      if (interval) {
+        clearInterval(interval);
+        interval = null;
+      }
+      if (signal) {
+        signal.removeEventListener("abort", abortHandler);
+      }
+    };
+
+    const settle = (handler: () => void) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      handler();
+    };
+
+    const abortHandler = () => {
+      cancelBackgroundJob(job.workspaceRoot, job.id);
+      settle(() => reject(taskAbortError(signal)));
+    };
+
+    const poll = () => {
+      const current = readBackgroundJob(job.workspaceRoot, job.id);
+      if (!current || current.jobClass !== "task") {
+        settle(() => reject(new Error(`Foreground task job "${job.id}" disappeared before producing a result.`)));
+        return;
+      }
+
+      switch (current.status) {
+        case "completed": {
+          const result = readTaskJobResult(current.workspaceRoot, current.id);
+          if (!result) {
+            settle(() => reject(new Error(`Foreground task job "${current.id}" completed without a stored task result.`)));
+            return;
+          }
+          settle(() => resolve({ job: current, result }));
+          return;
+        }
+        case "failed":
+        case "lost":
+          settle(() => reject(new Error(current.errorMessage ?? `Foreground task job "${current.id}" ${current.status}.`)));
+          return;
+        case "cancelled":
+          settle(() => reject(taskAbortError(signal)));
+          return;
+        default:
+          return;
+      }
+    };
+
+    if (signal?.aborted) {
+      abortHandler();
+      return;
+    }
+
+    signal?.addEventListener("abort", abortHandler, { once: true });
+    poll();
+    if (settled) {
+      return;
+    }
+    interval = setInterval(poll, FOREGROUND_TASK_POLL_INTERVAL_MS);
+    interval.unref?.();
+  });
 }
 
 function markCancelled(
